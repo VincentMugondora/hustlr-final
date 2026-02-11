@@ -1,13 +1,21 @@
 """
 Booking routes for Hustlr.
-Handles creating, managing, and canceling bookings.
+Handles provider search, booking creation, management, and cancellation.
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends
-from typing import List
-from backend.models import Booking, BookingCreate, User
+import logging
+from datetime import datetime, time
+from typing import List, Optional
+from fastapi import APIRouter, HTTPException, status, Depends, Query
+from backend.models import (
+    Booking, BookingCreate, BookingStatus, BookingCancellationRequest, BookingResponse,
+    ProviderSearchRequest, ProviderSearchResult, User
+)
 from backend.auth import get_current_user
 from backend.db import db
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 

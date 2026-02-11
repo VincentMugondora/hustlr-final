@@ -90,6 +90,46 @@ class Booking(BookingBase):
         allow_population_by_field_name = True
 
 
+class ProviderSearchRequest(BaseModel):
+    """Request model for searching service providers."""
+    service_type: str = Field(..., min_length=1, max_length=50, description="Type of service needed")
+    location: str = Field(..., min_length=1, max_length=100, description="Service location")
+    date: Optional[str] = Field(None, description="Preferred date (YYYY-MM-DD)")
+    time: Optional[str] = Field(None, description="Preferred time (HH:MM)")
+    max_results: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
+
+
+class ProviderSearchResult(BaseModel):
+    """Response model for provider search results."""
+    id: str
+    user_id: str
+    service_type: str
+    location: str
+    description: Optional[str]
+    hourly_rate: Optional[float]
+    rating: float
+    total_ratings: int
+    availability: Optional[dict]
+    is_verified: bool
+    created_at: datetime
+
+
+class BookingCancellationRequest(BaseModel):
+    """Request model for booking cancellation/rescheduling."""
+    reason: Optional[str] = Field(None, max_length=500, description="Reason for cancellation")
+    new_date: Optional[str] = Field(None, description="New date for rescheduling (YYYY-MM-DD)")
+    new_time: Optional[str] = Field(None, description="New time for rescheduling (HH:MM)")
+    action: str = Field(..., pattern="^(cancel|reschedule)$", description="Action to perform")
+
+
+class BookingResponse(BaseModel):
+    """Response model for booking operations."""
+    success: bool
+    message: str
+    booking_id: Optional[str] = None
+    booking: Optional[Booking] = None
+
+
 class RatingBase(BaseModel):
     booking_id: str
     customer_id: str
