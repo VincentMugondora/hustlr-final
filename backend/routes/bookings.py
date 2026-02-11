@@ -9,7 +9,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from backend.models import (
     Booking, BookingCreate, BookingStatus, BookingCancellationRequest, BookingResponse,
-    ProviderSearchRequest, ProviderSearchResult, User
+    ProviderSearchRequest, ProviderSearchResult, Rating, RatingCreate, User
 )
 from backend.auth import get_current_user
 from backend.db import db
@@ -348,6 +348,110 @@ async def cancel_booking(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to cancel or reschedule booking"
+        )
+
+
+@router.post("/{booking_id}/rate", response_model=Rating)
+async def rate_booking(
+    booking_id: str,
+    rating_data: RatingCreate,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Submit a rating and optional feedback for a completed booking.
+    Only the customer who made the booking can rate it, and only after completion.
+    """
+    try:
+        # Find the booking
+        booking = await db.bookings.find_one({"_id": booking_id})
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Booking not found"
+            )
+
+        # Ensure only the customer who made the booking can rate it
+        if current_user.role != "customer" or booking["customer_id"] != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to rate this booking"
+            )
+
+        # Check if booking is completed
+        if booking["status"] != BookingStatus.COMPLETED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Can only rate completed bookings"
+            )
+
+        # Check if rating already exists for this booking
+        existing_rating = await db.ratings.find_one({"booking_id": booking_id})
+        if existing_rating:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Rating already submitted for this booking"
+            )
+
+        # Validate that the rating data matches the booking
+        if rating_data.booking_id != booking_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Booking ID mismatch"
+            )
+
+        if rating_data.customer_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Customer ID mismatch"
+            )
+
+        if rating_data.provider_id != booking["provider_id"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provider ID mismatch"
+            )
+
+        # Create rating document
+        rating_doc = rating_data.dict()
+        rating_doc["created_at"] = datetime.utcnow()
+
+        # Insert rating
+        result = await db.ratings.insert_one(rating_doc)
+        rating_doc["_id"] = str(result.inserted_id)
+
+        # Update provider's average rating and total ratings
+        provider = await db.service_providers.find_one({"_id": booking["provider_id"]})
+        if provider:
+            current_rating = provider.get("rating", 0.0)
+            current_total = provider.get("total_ratings", 0)
+
+            # Calculate new average rating
+            new_total = current_total + 1
+            new_rating = ((current_rating * current_total) + rating_data.rating) / new_total
+
+            # Update provider
+            await db.service_providers.update_one(
+                {"_id": booking["provider_id"]},
+                {
+                    "$set": {
+                        "rating": round(new_rating, 2),
+                        "total_ratings": new_total,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+
+        logger.info(f"Rating submitted for booking {booking_id}: {rating_data.rating} stars by customer {current_user.id}")
+
+        return Rating(**rating_doc)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting rating for booking {booking_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to submit rating"
         )
 
 
