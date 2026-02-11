@@ -38,10 +38,10 @@ class TestProviderSearch:
 
         # Check that our test provider is in results
         provider_ids = [p["id"] for p in data]
-        assert str(test_service_provider.id) in provider_ids
+        assert str(test_provider.id) in provider_ids
 
     @pytest.mark.asyncio
-    async def test_search_providers_with_date_time(self, async_client, test_service_provider, customer_headers):
+    async def test_search_providers_with_date_time(self, async_client, test_provider, customer_headers):
         """Test provider search with date and time filtering."""
         search_data = {
             "service_type": "plumber",
