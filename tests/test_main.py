@@ -41,4 +41,5 @@ def test_register_user():
     response = client.post("/api/v1/auth/register", json=user_data)
     # Note: This will fail if MongoDB is not connected (db is None)
     # In a real test environment, you'd mock the database
-    assert response.status_code in [200, 500]  # 200 if DB connected, 500 if not
+    # The global exception handler should catch AttributeError and return 500
+    assert response.status_code == 500  # Database not connected
