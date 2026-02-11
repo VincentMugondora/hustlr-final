@@ -201,7 +201,7 @@ class TestProviderEndpoints:
         assert data["is_verified"] == test_provider.is_verified
 
     @pytest.mark.asyncio
-    async def test_update_provider_profile(self, async_client, test_provider, auth_headers):
+    async def test_update_provider_profile(self, async_client, test_provider, provider_headers):
         """Test updating provider profile."""
         update_data = {
             "description": "Updated plumbing services",
@@ -212,7 +212,7 @@ class TestProviderEndpoints:
         response = await async_client.put(
             "/api/v1/providers/me",
             json=update_data,
-            headers=auth_headers
+            headers=provider_headers
         )
         assert response.status_code == 200
 
@@ -226,7 +226,7 @@ class TestBookingEndpoints:
     """Test booking-related endpoints."""
 
     @pytest.mark.asyncio
-    async def test_search_providers(self, async_client, test_provider, auth_headers):
+    async def test_search_providers(self, async_client, test_provider, customer_headers):
         """Test searching for providers."""
         search_data = {
             "service_type": "plumber",
@@ -237,7 +237,7 @@ class TestBookingEndpoints:
         response = await async_client.post(
             "/api/v1/bookings/search_providers",
             json=search_data,
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 200
 
@@ -250,7 +250,7 @@ class TestBookingEndpoints:
             assert "rating" in provider
 
     @pytest.mark.asyncio
-    async def test_create_booking(self, async_client, test_user, test_provider, auth_headers):
+    async def test_create_booking(self, async_client, test_user_customer, test_provider, customer_headers):
         """Test creating a booking."""
         booking_data = {
             "provider_id": str(test_provider.id),
@@ -264,18 +264,18 @@ class TestBookingEndpoints:
         response = await async_client.post(
             "/api/v1/bookings/",
             json=booking_data,
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 200
 
         data = response.json()
-        assert data["customer_id"] == str(test_user.id)
+        assert data["customer_id"] == str(test_user_customer.id)
         assert data["provider_id"] == str(test_provider.id)
         assert data["status"] == "pending"
         assert "id" in data
 
     @pytest.mark.asyncio
-    async def test_create_booking_past_date(self, async_client, test_provider, auth_headers):
+    async def test_create_booking_past_date(self, async_client, test_provider, customer_headers):
         """Test creating booking with past date (should fail)."""
         booking_data = {
             "provider_id": str(test_provider.id),
@@ -287,17 +287,17 @@ class TestBookingEndpoints:
         response = await async_client.post(
             "/api/v1/bookings/",
             json=booking_data,
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 400
         assert "future date" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_get_user_bookings(self, async_client, test_booking, auth_headers):
+    async def test_get_user_bookings(self, async_client, test_booking, customer_headers):
         """Test getting user bookings."""
         response = await async_client.get(
             "/api/v1/bookings/",
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 200
 
@@ -308,7 +308,7 @@ class TestBookingEndpoints:
         assert str(test_booking.id) in booking_ids
 
     @pytest.mark.asyncio
-    async def test_cancel_booking(self, async_client, test_booking, auth_headers):
+    async def test_cancel_booking(self, async_client, test_booking, customer_headers):
         """Test canceling a booking."""
         cancel_data = {
             "reason": "Schedule conflict"
@@ -317,7 +317,7 @@ class TestBookingEndpoints:
         response = await async_client.put(
             f"/api/v1/bookings/{test_booking.id}/cancel",
             json=cancel_data,
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 200
 
@@ -325,7 +325,7 @@ class TestBookingEndpoints:
         assert data["status"] == "cancelled"
 
     @pytest.mark.asyncio
-    async def test_rate_booking(self, async_client, test_booking, test_user, test_provider, auth_headers, test_db):
+    async def test_rate_booking(self, async_client, test_booking, test_user_customer, test_provider, customer_headers, test_db):
         """Test rating a completed booking."""
         # First ensure the booking is completed
         await test_db.bookings.update_one(
@@ -335,7 +335,7 @@ class TestBookingEndpoints:
 
         rating_data = {
             "booking_id": str(test_booking.id),
-            "customer_id": str(test_user.id),
+            "customer_id": str(test_user_customer.id),
             "provider_id": str(test_provider.id),
             "rating": 5,
             "comment": "Excellent service!"
@@ -344,7 +344,7 @@ class TestBookingEndpoints:
         response = await async_client.post(
             f"/api/v1/bookings/{test_booking.id}/rate",
             json=rating_data,
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 200
 
@@ -354,7 +354,7 @@ class TestBookingEndpoints:
         assert "id" in data
 
     @pytest.mark.asyncio
-    async def test_rate_incomplete_booking(self, async_client, auth_headers, test_db):
+    async def test_rate_incomplete_booking(self, async_client, customer_headers, test_db):
         """Test rating an incomplete booking (should fail)."""
         # Create a pending booking
         booking_data = {
@@ -379,7 +379,7 @@ class TestBookingEndpoints:
         response = await async_client.post(
             f"/api/v1/bookings/{booking_id}/rate",
             json=rating_data,
-            headers=auth_headers
+            headers=customer_headers
         )
         assert response.status_code == 400
         assert "completed" in response.json()["detail"].lower()
@@ -387,12 +387,6 @@ class TestBookingEndpoints:
 
 class TestAdminEndpoints:
     """Test admin-only endpoints."""
-
-    @pytest.fixture
-    def admin_headers(self):
-        """Create authentication headers for admin user."""
-        token = create_access_token({"sub": "admin123", "role": "admin"})
-        return {"Authorization": f"Bearer {token}"}
 
     @pytest.mark.asyncio
     async def test_verify_provider(self, async_client, test_provider, admin_headers, test_db):

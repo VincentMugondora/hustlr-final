@@ -13,100 +13,11 @@ from backend.models import User, ServiceProvider, Booking, Rating, BookingStatus
 from backend.auth import create_access_token
 
 
-@pytest.fixture
-async def test_db():
-    """Create a test database connection."""
-    from motor.motor_asyncio import AsyncIOMotorClient
-    import os
-
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-    test_db_name = "hustlr_test_bookings"
-
-    client = AsyncIOMotorClient(mongo_uri)
-    db = client[test_db_name]
-
-    yield db
-
-    # Clean up after tests
-    client.drop_database(test_db_name)
-    client.close()
-
-
-@pytest.fixture
-async def test_customer(test_db):
-    """Create a test customer."""
-    user_data = {
-        "phone_number": "+1111111111",
-        "name": "Test Customer",
-        "password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfLkIwXH7iN8K2",
-        "role": "customer",
-        "created_at": datetime.utcnow()
-    }
-
-    result = await test_db.users.insert_one(user_data)
-    user_data["_id"] = str(result.inserted_id)
-    return User(**user_data)
-
-
-@pytest.fixture
-async def test_service_provider(test_db):
-    """Create a test service provider."""
-    user_data = {
-        "phone_number": "+2222222222",
-        "name": "Test Provider",
-        "password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfLkIwXH7iN8K2",
-        "role": "provider",
-        "created_at": datetime.utcnow()
-    }
-
-    result = await test_db.users.insert_one(user_data)
-    user_data["_id"] = str(result.inserted_id)
-
-    provider_data = {
-        "user_id": str(result.inserted_id),
-        "service_type": "plumber",
-        "location": "downtown",
-        "description": "Professional plumbing services",
-        "hourly_rate": 50.0,
-        "business_name": "Test Plumbing Co",
-        "contact_phone": "+2222222222",
-        "contact_email": "test@plumbing.com",
-        "years_experience": 10,
-        "license_number": "PL123456",
-        "insurance_info": "Fully insured",
-        "is_verified": True,
-        "verification_status": "verified",
-        "rating": 4.5,
-        "total_ratings": 10,
-        "availability": {"monday": "9-17", "tuesday": "9-17"},
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    }
-
-    result = await test_db.service_providers.insert_one(provider_data)
-    provider_data["_id"] = str(result.inserted_id)
-    return ServiceProvider(**provider_data)
-
-
-@pytest.fixture
-def customer_headers(test_customer):
-    """Create authentication headers for customer."""
-    token = create_access_token({"sub": str(test_customer.id), "role": test_customer.role})
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def provider_headers(test_service_provider):
-    """Create authentication headers for provider."""
-    token = create_access_token({"sub": str(test_service_provider.user_id), "role": "provider"})
-    return {"Authorization": f"Bearer {token}"}
-
-
 class TestProviderSearch:
     """Test provider search functionality."""
 
     @pytest.mark.asyncio
-    async def test_search_providers_basic(self, async_client, test_service_provider, customer_headers):
+    async def test_search_providers_basic(self, async_client, test_provider, customer_headers):
         """Test basic provider search."""
         search_data = {
             "service_type": "plumber",
