@@ -1,3 +1,49 @@
+import asyncio
+import pytest
+
+
+async def test_provider_registration_and_admin_verification(client):
+    # Create customer and admin users
+    cust = {"email": "user1@example.com", "password": "pass1234", "role": "customer", "name": "User One"}
+    admin = {"email": "admin@example.com", "password": "adminpass", "role": "admin", "name": "Administrator"}
+
+    # Register users
+    r1 = await client.post("/auth/register", json=cust)
+    assert r1.status_code == 201
+    r2 = await client.post("/auth/register", json=admin)
+    assert r2.status_code == 201
+
+    # Login to get tokens
+    lr = await client.post("/auth/login", data={"username": cust["email"], "password": cust["password"]})
+    token_c = lr.json()["access_token"]
+    lr2 = await client.post("/auth/login", data={"username": admin["email"], "password": admin["password"]})
+    token_admin = lr2.json()["access_token"]
+
+    # Register provider as customer
+    provider = {
+        "user_id": "1",
+        "service_type": "electrician",
+        "location": "Downtown",
+        "license_number": "LIC123",
+        "insurance_info": "Insured",
+        "contact_email": "prov@example.com"
+    }
+
+    headers = {"Authorization": f"Bearer {token_c}"}
+    pr = await client.post("/providers/register", json=provider, headers=headers)
+    assert pr.status_code == 200 or pr.status_code == 201
+    body = pr.json()
+    assert body.get("verification_status") == "pending"
+
+    provider_id = body.get("_id") or body.get("id")
+
+    # Admin verifies provider
+    verify_payload = {"verified": True, "notes": "All good"}
+    admin_headers = {"Authorization": f"Bearer {token_admin}"}
+    v = await client.put(f"/admin/providers/{provider_id}/verify", json=verify_payload, headers=admin_headers)
+    assert v.status_code == 200
+    vv = v.json()
+    assert vv.get("verification_status") == "verified"
 """
 Comprehensive tests for provider registration and verification endpoints.
 """

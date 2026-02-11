@@ -1,3 +1,124 @@
+import asyncio
+import pytest
+from httpx import AsyncClient
+
+from backend.main import app
+
+
+class FakeCollection:
+    def __init__(self):
+        self._data = {}
+        self._auto = 1
+
+    async def insert_one(self, doc):
+        _id = doc.get("_id") or str(self._auto)
+        self._auto += 1
+        doc_copy = dict(doc)
+        doc_copy["_id"] = _id
+        self._data[_id] = doc_copy
+        class Res: pass
+        res = Res()
+        res.inserted_id = _id
+        res.matched_count = 1
+        return res
+
+    async def find_one(self, query):
+        # naive matching for equality and _id
+        for d in list(self._data.values()):
+            ok = True
+            for k, v in query.items():
+                if k == "_id":
+                    if d.get("_id") != v:
+                        ok = False
+                        break
+                elif isinstance(v, dict) and "$in" in v:
+                    if d.get(k) not in v["$in"]:
+                        ok = False
+                        break
+                else:
+                    if d.get(k) != v:
+                        ok = False
+                        break
+            if ok:
+                return dict(d)
+        return None
+
+    def _match(self, query):
+        results = []
+        for d in list(self._data.values()):
+            ok = True
+            for k, v in query.items():
+                if isinstance(v, dict) and "$regex" in v:
+                    if v["$regex"].lower() not in str(d.get(k, "")).lower():
+                        ok = False
+                        break
+                elif isinstance(v, dict) and "$exists" in v:
+                    exists = k in d and d.get(k) is not None
+                    if exists != v["$exists"]:
+                        ok = False
+                        break
+                else:
+                    if d.get(k) != v:
+                        ok = False
+                        break
+            if ok:
+                results.append(dict(d))
+        return results
+
+    def find(self, query=None):
+        query = query or {}
+        items = self._match(query)
+
+        async def _gen():
+            for it in items:
+                yield it
+
+        return _gen()
+
+    async def update_one(self, query, update):
+        doc = await self.find_one(query)
+        class Res: pass
+        res = Res()
+        if not doc:
+            res.matched_count = 0
+            return res
+        # apply $set
+        for op, payload in update.items():
+            if op == "$set":
+                for k, v in payload.items():
+                    doc[k] = v
+        self._data[doc["_id"]] = doc
+        res.matched_count = 1
+        return res
+
+    async def count_documents(self, query):
+        return len(self._match(query))
+
+    async def create_index(self, *args, **kwargs):
+        return None
+
+
+class FakeDB:
+    def __init__(self):
+        self.users = FakeCollection()
+        self.service_providers = FakeCollection()
+        self.bookings = FakeCollection()
+        self.conversations = FakeCollection()
+        self.ratings = FakeCollection()
+
+
+@pytest.fixture(autouse=True)
+def patch_db(monkeypatch):
+    import backend.db as _db
+    fake = FakeDB()
+    monkeypatch.setattr(_db, "db", fake)
+    return fake
+
+
+@pytest.fixture
+async def client():
+    async with AsyncClient(app=app, base_url="http://testserver") as ac:
+        yield ac
 """
 Pytest configuration and fixtures for Hustlr backend tests.
 """
@@ -20,7 +141,7 @@ def event_loop():
     loop.close()
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session")
 async def test_db():
     """Create a test database connection."""
     mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
@@ -36,7 +157,7 @@ async def test_db():
     client.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_client():
     """Create an async test client."""
     from httpx import AsyncClient
@@ -46,7 +167,7 @@ async def async_client():
         yield client
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_user_customer(test_db):
     """Create a test customer user."""
     user_data = {
@@ -62,7 +183,7 @@ async def test_user_customer(test_db):
     return User(**user_data)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_user_provider(test_db):
     """Create a test provider user."""
     user_data = {
@@ -78,7 +199,7 @@ async def test_user_provider(test_db):
     return User(**user_data)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_provider(test_db, test_user_provider):
     """Create a test service provider."""
     provider_data = {
@@ -107,7 +228,7 @@ async def test_provider(test_db, test_user_provider):
     return ServiceProvider(**provider_data)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_booking(test_db, test_user_customer, test_provider):
     """Create a test booking."""
     booking_data = {

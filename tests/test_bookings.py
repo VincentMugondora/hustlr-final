@@ -1,3 +1,80 @@
+import asyncio
+import pytest
+from datetime import datetime, timedelta
+
+
+async def test_booking_flow_create_cancel_rate(client):
+    # Register customer, provider, admin
+    cust = {"email": "cust2@example.com", "password": "pass1234", "role": "customer", "name": "Cust Two"}
+    prov = {"email": "prov2@example.com", "password": "provpass", "role": "provider", "name": "Prov Two"}
+    admin = {"email": "admin2@example.com", "password": "adminpass", "role": "admin", "name": "Admin Two"}
+
+    await client.post("/auth/register", json=cust)
+    await client.post("/auth/register", json=prov)
+    await client.post("/auth/register", json=admin)
+
+    lr = await client.post("/auth/login", data={"username": cust["email"], "password": cust["password"]})
+    token_c = lr.json()["access_token"]
+    lr2 = await client.post("/auth/login", data={"username": prov["email"], "password": prov["password"]})
+    token_p = lr2.json()["access_token"]
+    lr3 = await client.post("/auth/login", data={"username": admin["email"], "password": admin["password"]})
+    token_a = lr3.json()["access_token"]
+
+    # Provider registers profile
+    provider_profile = {
+        "user_id": "1",
+        "service_type": "cleaning",
+        "location": "Uptown",
+        "contact_email": "p2@example.com"
+    }
+    h = {"Authorization": f"Bearer {token_p}"}
+    pr = await client.post("/providers/register", json=provider_profile, headers=h)
+    assert pr.status_code in (200,201)
+    body = pr.json()
+    pid = body.get("_id") or body.get("id")
+
+    # Admin verify
+    admin_h = {"Authorization": f"Bearer {token_a}"}
+    v = await client.put(f"/admin/providers/{pid}/verify", json={"verified": True, "notes": "ok"}, headers=admin_h)
+    assert v.status_code == 200
+
+    # Create booking in future
+    future = datetime.utcnow() + timedelta(days=1)
+    booking_payload = {
+        "provider_id": pid,
+        "service_type": "cleaning",
+        "date": future.strftime("%Y-%m-%d"),
+        "time": future.strftime("%H:%M"),
+        "duration_hours": 2.0
+    }
+
+    cust_h = {"Authorization": f"Bearer {token_c}"}
+    b = await client.post("/bookings/", json=booking_payload, headers=cust_h)
+    assert b.status_code in (200,201)
+    booking = b.json()
+    bid = booking.get("_id") or booking.get("id")
+
+    # Provider marks booking completed
+    prov_h = {"Authorization": f"Bearer {token_p}"}
+    s = await client.put(f"/bookings/{bid}/status", params={"status": "completed"}, headers=prov_h)
+    assert s.status_code == 200
+
+    # Customer submits rating
+    rating_payload = {
+        "booking_id": bid,
+        "customer_id": "1",
+        "provider_id": pid,
+        "rating": 5,
+        "comment": "Great job"
+    }
+    r = await client.post(f"/bookings/{bid}/rate", json=rating_payload, headers=cust_h)
+    assert r.status_code == 200
+    rr = r.json()
+    assert rr.get("rating") == 5
+
+    # Attempt to rate again should conflict
+    r2 = await client.post(f"/bookings/{bid}/rate", json=rating_payload, headers=cust_h)
+    assert r2.status_code == 409
 """
 Comprehensive tests for booking-related endpoints.
 Tests booking creation, management, ratings, and cancellations.
