@@ -13,7 +13,21 @@ def test_health_check():
     """Test the health check endpoint."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy", "service": "Hustlr API"}
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert data["service"] == "Hustlr API"
+    assert data["version"] == "1.0.0"
+    assert "environment" in data
+
+
+def test_root_endpoint():
+    """Test the root endpoint."""
+    response = client.get("/")
+    assert response.status_code == 200
+    data = response.json()
+    assert "message" in data
+    assert "docs" in data
+    assert "health" in data
 
 
 def test_register_user():
@@ -24,6 +38,7 @@ def test_register_user():
         "password": "testpass123",
         "role": "customer"
     }
-    response = client.post("/auth/register", json=user_data)
-    # Note: This might fail if MongoDB is not running, but tests the endpoint structure
+    response = client.post("/api/v1/auth/register", json=user_data)
+    # Note: This will fail if MongoDB is not connected (db is None)
+    # In a real test environment, you'd mock the database
     assert response.status_code in [200, 500]  # 200 if DB connected, 500 if not
