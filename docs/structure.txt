@@ -1,0 +1,192 @@
+Step-by-Step Guide for Copilot-Driven Development
+Step 0 — Setup Repository
+
+Create a GitHub repository named hustlr.
+
+Install Python 3.11+, Node.js 18+, and MongoDB locally or via Docker.
+
+Enable GitHub Copilot in your IDE (VS Code recommended).
+
+git init
+code .
+
+
+Create folder structure:
+
+hustlr/
+├─ backend/         # FastAPI code
+├─ whatsapp/        # Baileys + Node.js code
+├─ bedrock/         # AWS Bedrock agent configs
+├─ tests/           # Unit & integration tests
+├─ requirements.txt
+├─ package.json
+└─ README.md
+
+Step 1 — MongoDB Integration
+
+Goal: Secure, scalable database for users, providers, bookings, and conversations.
+
+Install Python MongoDB driver:
+
+pip install motor pymongo
+
+
+Create backend/db.py:
+
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ASCENDING
+import os
+
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+DB_NAME = "hustlr"
+
+client = AsyncIOMotorClient(MONGO_URI)
+db = client[DB_NAME]
+
+# Indexes for fast queries
+async def create_indexes():
+    await db.service_providers.create_index([("service_type", ASCENDING), ("location", ASCENDING)])
+    await db.bookings.create_index("customer_id")
+    await db.bookings.create_index("provider_id")
+    await db.conversations.create_index("user_id")
+
+
+Copilot can help you add validation, indexes, and encryption hooks for PII.
+
+Step 2 — FastAPI Backend Skeleton
+
+Install FastAPI and security dependencies:
+
+pip install fastapi uvicorn python-jose passlib[bcrypt] pydantic
+
+
+Create backend/main.py:
+
+from fastapi import FastAPI, Depends, HTTPException
+from backend.db import db, create_indexes
+
+app = FastAPI(title="Hustlr Backend")
+
+@app.on_event("startup")
+async def startup():
+    await create_indexes()
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+Add JWT-based authentication (Copilot can scaffold user login/registration with hashed passwords).
+
+Step 3 — Bedrock Agent Integration
+
+Create bedrock/agent.py (Python SDK example):
+
+import boto3
+import os
+
+bedrock = boto3.client("bedrock", region_name="us-east-1")
+
+AGENT_ARN = os.environ.get("HUSTLR_AGENT_ARN")
+
+def invoke_agent(user_input: str, session_id: str):
+    response = bedrock.invoke_agent(
+        agentIdentifier=AGENT_ARN,
+        inputText=user_input,
+        sessionId=session_id
+    )
+    return response["content"]
+
+
+Copilot can help implement structured calls to your action groups (search_providers, create_booking, etc.).
+
+Step 4 — Baileys WhatsApp Integration
+
+Initialize Node.js project in whatsapp/:
+
+npm init -y
+npm install @adiwajshing/baileys qrcode-terminal dotenv
+
+
+whatsapp/index.js sample:
+
+const { default: makeWASocket, useMultiFileAuthState } = require('@adiwajshing/baileys');
+const qrcode = require('qrcode-terminal');
+require('dotenv').config();
+
+async function startWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true
+    });
+
+    sock.ev.on('messages.upsert', async m => {
+        const message = m.messages[0];
+        console.log('Received:', message.message.conversation);
+        // Forward to FastAPI backend
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+}
+
+startWhatsApp();
+
+
+Copilot can generate handlers to forward messages to FastAPI, and parse responses from the Bedrock agent.
+
+Step 5 — Booking Workflows
+
+Copilot can scaffold FastAPI endpoints:
+
+@app.post("/bookings")
+async def create_booking(customer_id: str, provider_id: str, date: str, time: str):
+    # Validate provider availability
+    # Save booking in MongoDB
+    # Return booking confirmation
+
+
+Add role-based access for admin overrides.
+
+Step 6 — Provider Registration & Verification
+
+Copilot can scaffold:
+
+@app.post("/providers/register")
+async def register_provider(provider_info: ProviderSchema):
+    # Save provider info in DB
+    # Send verification request to admin
+
+
+Admin endpoint to approve:
+
+@app.post("/providers/{provider_id}/verify")
+async def verify_provider(provider_id: str, admin_id: str):
+    # Check admin role
+    # Update provider verification status
+
+Step 7 — Testing & Security
+
+Unit tests: pytest + httpx for FastAPI endpoints.
+
+Integration tests: simulate WhatsApp → FastAPI → Bedrock Agent flow.
+
+Security:
+
+Hash passwords (bcrypt)
+
+Validate all inputs (pydantic)
+
+Role-based access control
+
+Limit Bedrock agent API permissions
+
+Step 8 — Incremental Development with Copilot
+
+Work step by step: MongoDB → FastAPI → Baileys → Bedrock → workflows.
+
+Let Copilot autocomplete endpoints, models, and database operations.
+
+Frequently commit working code (git commit -m "step N completed").
+
+Only integrate AWS Lambda when action groups are stable.

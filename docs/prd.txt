@@ -1,0 +1,168 @@
+Here’s a **step-by-step Product Requirements Document (PRD)** for Hustlr using FastAPI, Baileys, AWS Bedrock Agent, and MongoDB. It is structured for clarity and development execution.
+
+---
+
+# Hustlr PRD – WhatsApp Service Marketplace
+
+**Goal:** Build a WhatsApp-based platform connecting users to local service providers using AI for conversational assistance, structured bookings, and provider management.
+
+---
+
+## 1. Architecture Overview
+
+**Components:**
+
+| Component              | Role                                                                  |
+| ---------------------- | --------------------------------------------------------------------- |
+| **WhatsApp (Baileys)** | Messaging interface; sends/receives user messages                     |
+| **FastAPI**            | Core business logic; validates actions, interacts with DB             |
+| **AWS Bedrock Agent**  | Conversational AI; interprets user intent, triggers action groups     |
+| **MongoDB**            | Stores users, service providers, bookings, ratings, and conversations |
+
+Flow:
+
+```
+User WhatsApp → Baileys → FastAPI → Bedrock Agent → Action Groups → FastAPI → MongoDB
+```
+
+---
+
+## 2. Users & Roles
+
+**1. Customer**
+
+* Search for service providers
+* Book, cancel, postpone appointments
+* Rate service providers
+* View platform policies
+
+**2. Service Provider**
+
+* Register services
+* Accept or decline bookings
+* Submit verification documents (ID, licenses, references)
+* View bookings and ratings
+
+**3. Admin**
+
+* Verify service providers
+* Override bookings
+* CRUD operations on services, providers, and chat content
+
+---
+
+## 3. Core Features (Stepwise)
+
+### Step 1 – WhatsApp Integration
+
+* Use **Baileys** to handle incoming/outgoing messages.
+* Connect FastAPI endpoints to Baileys events.
+* Ensure message reliability and reconnection logic.
+
+### Step 2 – Database Setup
+
+* Create MongoDB collections:
+
+  * `users`
+  * `service_providers`
+  * `bookings`
+  * `conversations`
+  * `ratings`
+* Implement indexes for fast searches.
+
+### Step 3 – Bedrock Agent Setup
+
+* Create AWS Bedrock Agent:
+
+  * Name: `HustlrAgent`
+  * Instruction: Understand user requests, trigger action groups
+* Define **Action Groups**:
+
+  * `search_providers`
+  * `create_booking`
+  * `register_provider`
+* Use **Quick-create Lambda** for initial testing.
+
+### Step 4 – FastAPI Backend
+
+* Implement REST endpoints:
+
+  * `/search_providers` → returns matching providers
+  * `/create_booking` → creates booking in DB
+  * `/register_provider` → registers provider info
+  * `/cancel_booking` → cancels or updates booking
+  * `/verify_provider` → admin verification
+* Enforce role-based access control for Admin vs Users
+
+### Step 5 – Booking Workflow
+
+* Customers request a service via WhatsApp
+* Agent interprets intent → triggers `search_providers`
+* Customer selects provider → triggers `create_booking`
+* Provider receives booking request → can accept/decline
+* MongoDB stores all booking and conversation logs
+
+### Step 6 – Verification Workflow
+
+* Providers submit documents
+* Admin reviews and approves
+* Bedrock agent informs provider of verification status via WhatsApp
+
+### Step 7 – Ratings & Feedback
+
+* After service completion, agent prompts customers for ratings
+* Ratings stored in MongoDB
+* Admin and provider dashboards can summarize feedback
+
+---
+
+## 4. Security & Compliance
+
+* Validate uploaded documents (ID/license)
+* Secure MongoDB with authentication
+* Use IAM roles for Bedrock agent to limit access
+* Ensure GDPR-like privacy: store minimal PII and allow deletion
+
+---
+
+## 5. Admin Dashboard (Optional for MVP)
+
+* CRUD service providers
+* Verify or reject provider registrations
+* Override bookings
+* Monitor conversations
+
+---
+
+## 6. Technical Requirements
+
+* **FastAPI** 0.101+
+* **MongoDB** 6.x+
+* **Baileys** latest stable
+* **AWS Bedrock Agent** (Nova Lite 1.0 recommended for MVP)
+* Node.js 18+ (for Baileys integration)
+* Python 3.11+ (for FastAPI backend)
+
+---
+
+## 7. Development Milestones
+
+| Step | Deliverable                | Notes                                 |
+| ---- | -------------------------- | ------------------------------------- |
+| 1    | WhatsApp messaging working | Connect FastAPI to Baileys            |
+| 2    | MongoDB setup              | Collections, indexes                  |
+| 3    | Bedrock agent MVP          | Search & booking action groups        |
+| 4    | Customer booking flow      | Search → Select → Create booking      |
+| 5    | Provider workflow          | Accept/decline bookings, verification |
+| 6    | Ratings workflow           | Capture and store customer feedback   |
+| 7    | Admin panel                | Verification, overrides, monitoring   |
+
+---
+
+## 8. Success Criteria
+
+* Users can book services via WhatsApp reliably
+* Providers can manage bookings and get verified
+* All interactions are logged in MongoDB
+* Bedrock agent accurately interprets user requests
+* Admin can perform CRUD and verification tasks
