@@ -90,7 +90,7 @@ async def search_providers(
         )
 
 
-@router.post("/", response_model=BookingResponse)
+@router.post("/", response_model=Booking)
 async def create_booking(
     booking: BookingCreate,
     current_user: User = Depends(get_current_user)
@@ -161,7 +161,7 @@ async def create_booking(
 
         logger.info(f"Created booking {booking_doc['_id']} for customer {current_user.id} with provider {booking.provider_id}")
 
-        return BookingResponse(**booking_doc)
+        return Booking(**booking_doc)
 
     except HTTPException:
         raise
@@ -238,7 +238,7 @@ async def update_booking_status(
     return {"message": "Booking status updated"}
 
 
-@router.put("/{booking_id}/cancel", response_model=BookingResponse)
+@router.put("/{booking_id}/cancel", response_model=Booking)
 async def cancel_booking(
     booking_id: str,
     cancellation_request: BookingCancellationRequest,
@@ -339,7 +339,7 @@ async def cancel_booking(
         updated_booking = await db.bookings.find_one({"_id": booking_id})
         updated_booking["_id"] = str(updated_booking["_id"])
 
-        return BookingResponse(**updated_booking)
+        return Booking(**updated_booking)
 
     except HTTPException:
         raise
