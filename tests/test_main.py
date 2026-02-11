@@ -124,7 +124,7 @@ class TestProviderEndpoints:
     """Test provider registration and management endpoints."""
 
     @pytest.mark.asyncio
-    async def test_register_provider(self, async_client, test_user, auth_headers, test_db):
+    async def test_register_provider(self, async_client, test_user_provider, provider_headers, test_db):
         """Test provider registration."""
         provider_data = {
             "service_type": "electrician",
@@ -142,7 +142,7 @@ class TestProviderEndpoints:
         response = await async_client.post(
             "/api/v1/providers/register",
             json=provider_data,
-            headers=auth_headers
+            headers=provider_headers
         )
         assert response.status_code == 200
 
@@ -153,12 +153,8 @@ class TestProviderEndpoints:
         assert data["verification_status"] == "pending"
 
     @pytest.mark.asyncio
-    async def test_register_provider_unauthorized_role(self, async_client, auth_headers):
+    async def test_register_provider_unauthorized_role(self, async_client, admin_headers):
         """Test provider registration with unauthorized role."""
-        # Create a token for an admin user (not allowed to register as provider)
-        admin_token = create_access_token({"sub": "admin123", "role": "admin"})
-        admin_headers = {"Authorization": f"Bearer {admin_token}"}
-
         provider_data = {
             "service_type": "plumber",
             "location": "downtown"
@@ -172,7 +168,7 @@ class TestProviderEndpoints:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_register_provider_missing_license(self, async_client, test_user, auth_headers):
+    async def test_register_provider_missing_license(self, async_client, test_user_provider, provider_headers):
         """Test provider registration without required license for high-risk service."""
         provider_data = {
             "service_type": "electrician",
@@ -185,17 +181,17 @@ class TestProviderEndpoints:
         response = await async_client.post(
             "/api/v1/providers/register",
             json=provider_data,
-            headers=auth_headers
+            headers=provider_headers
         )
         assert response.status_code == 400
         assert "license number is required" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_get_provider_profile(self, async_client, test_provider, auth_headers):
+    async def test_get_provider_profile(self, async_client, test_provider, provider_headers):
         """Test getting provider profile."""
         response = await async_client.get(
             "/api/v1/providers/me",
-            headers=auth_headers
+            headers=provider_headers
         )
         assert response.status_code == 200
 
