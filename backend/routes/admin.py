@@ -3,11 +3,16 @@ Admin routes for Hustlr.
 Handles provider verification and admin operations.
 """
 
+import logging
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
-from backend.models import ServiceProvider, User
+from backend.models import ServiceProvider, User, ProviderVerificationRequest
 from backend.auth import get_current_user
 from backend.db import db
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -34,29 +39,75 @@ async def get_pending_providers(
 @router.put("/providers/{provider_id}/verify")
 async def verify_provider(
     provider_id: str,
-    verified: bool,
+    verification_request: ProviderVerificationRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """Verify or reject a service provider."""
+    """
+    Verify or reject a service provider application.
+    Updates verification status, notes, and timestamps.
+    """
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
 
-    # Update verification status
-    result = await db.service_providers.update_one(
-        {"_id": provider_id},
-        {"$set": {"is_verified": verified}}
-    )
+    try:
+        # Find the provider
+        provider = await db.service_providers.find_one({"_id": provider_id})
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Provider not found"
+            )
 
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Provider not found"
+        # Check if already verified/rejected
+        if provider.get("verification_status") in ["verified", "rejected"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provider has already been verified or rejected"
+            )
+
+        # Prepare update data
+        update_data = {
+            "is_verified": verification_request.verified,
+            "verification_status": "verified" if verification_request.verified else "rejected",
+            "verification_notes": verification_request.notes,
+            "verified_at": datetime.utcnow(),
+            "verified_by": current_user.id,
+            "updated_at": datetime.utcnow()
+        }
+
+        # Update the provider
+        result = await db.service_providers.update_one(
+            {"_id": provider_id},
+            {"$set": update_data}
         )
 
-    return {"message": f"Provider {'verified' if verified else 'rejected'}"}
+        if result.matched_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Provider not found"
+            )
+
+        action = "verified" if verification_request.verified else "rejected"
+        logger.info(f"Provider {provider_id} {action} by admin {current_user.id}")
+
+        return {
+            "message": f"Provider {action} successfully",
+            "provider_id": provider_id,
+            "verification_status": update_data["verification_status"],
+            "verified_at": update_data["verified_at"].isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error verifying provider {provider_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify provider"
+        )
 
 
 @router.get("/stats")

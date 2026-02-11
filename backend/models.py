@@ -37,11 +37,18 @@ class User(UserBase):
 
 class ServiceProviderBase(BaseModel):
     user_id: str
-    service_type: str = Field(..., description="Type of service (e.g., plumber, electrician)")
-    location: str = Field(..., description="Service location")
-    description: Optional[str] = None
-    hourly_rate: Optional[float] = Field(None, gt=0)
-    availability: Optional[dict] = None  # e.g., {"monday": "9-17", ...}
+    service_type: str = Field(..., min_length=2, max_length=50, description="Type of service (e.g., plumber, electrician)")
+    location: str = Field(..., min_length=2, max_length=100, description="Service location")
+    description: Optional[str] = Field(None, max_length=500, description="Detailed service description")
+    hourly_rate: Optional[float] = Field(None, gt=0, le=1000, description="Hourly rate in local currency")
+    availability: Optional[dict] = Field(None, description="Availability schedule (e.g., {'monday': '9-17', ...})")
+    business_name: Optional[str] = Field(None, max_length=100, description="Business/legal name")
+    contact_phone: Optional[str] = Field(None, pattern=r'^\+?[\d\s\-\(\)]+$', description="Contact phone number")
+    contact_email: Optional[str] = Field(None, description="Contact email address")
+    years_experience: Optional[int] = Field(None, ge=0, le=50, description="Years of experience")
+    license_number: Optional[str] = Field(None, max_length=50, description="Professional license number")
+    insurance_info: Optional[str] = Field(None, max_length=200, description="Insurance information")
+    verification_documents: Optional[List[str]] = Field(None, description="URLs or paths to verification documents")
 
 
 class ServiceProviderCreate(ServiceProviderBase):
@@ -51,12 +58,23 @@ class ServiceProviderCreate(ServiceProviderBase):
 class ServiceProvider(ServiceProviderBase):
     id: str = Field(..., alias="_id")
     is_verified: bool = False
-    rating: float = 0.0
-    total_ratings: int = 0
+    verification_status: str = Field(default="pending", description="Verification status: pending, verified, rejected")
+    verification_notes: Optional[str] = Field(None, max_length=500, description="Admin notes on verification")
+    verified_at: Optional[datetime] = None
+    verified_by: Optional[str] = None
+    rating: float = Field(default=0.0, ge=0.0, le=5.0)
+    total_ratings: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:
         allow_population_by_field_name = True
+
+
+class ProviderVerificationRequest(BaseModel):
+    """Request model for provider verification by admin."""
+    verified: bool = Field(..., description="Whether to verify or reject the provider")
+    notes: Optional[str] = Field(None, max_length=500, description="Verification notes or rejection reason")
 
 
 class BookingStatus(str, Enum):
