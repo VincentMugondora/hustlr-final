@@ -17,107 +17,10 @@ from backend.models import User, ServiceProvider, Booking, Rating
 from backend.auth import create_access_token
 
 
-# Test database setup
-@pytest.fixture(scope="session")
-def test_db():
-    """Create a test database connection."""
-    # Use a test database
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-    test_db_name = "hustlr_test"
-
-    client = AsyncIOMotorClient(mongo_uri)
-    db = client[test_db_name]
-
-    # Clean up before tests
-    yield db
-
-    # Clean up after tests
-    client.drop_database(test_db_name)
-    client.close()
-
-
 @pytest.fixture
 def test_client():
     """Create a test client."""
     return TestClient(app)
-
-
-@pytest.fixture
-async def async_client():
-    """Create an async test client."""
-    async with AsyncClient(app=app, base_url="http://testserver") as client:
-        yield client
-
-
-@pytest.fixture
-async def test_user(test_db):
-    """Create a test user in the database."""
-    user_data = {
-        "phone_number": "+1234567890",
-        "name": "Test User",
-        "password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfLkIwXH7iN8K2",  # "testpass123"
-        "role": "customer",
-        "created_at": datetime.utcnow()
-    }
-
-    result = await test_db.users.insert_one(user_data)
-    user_data["_id"] = str(result.inserted_id)
-    return User(**user_data)
-
-
-@pytest.fixture
-async def test_provider(test_db, test_user):
-    """Create a test service provider."""
-    provider_data = {
-        "user_id": str(test_user.id),
-        "service_type": "plumber",
-        "location": "downtown",
-        "description": "Professional plumbing services",
-        "hourly_rate": 50.0,
-        "business_name": "Test Plumbing Co",
-        "contact_phone": "+1234567890",
-        "contact_email": "test@plumbing.com",
-        "years_experience": 10,
-        "license_number": "PL123456",
-        "insurance_info": "Fully insured",
-        "is_verified": True,
-        "verification_status": "verified",
-        "rating": 4.5,
-        "total_ratings": 10,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    }
-
-    result = await test_db.service_providers.insert_one(provider_data)
-    provider_data["_id"] = str(result.inserted_id)
-    return ServiceProvider(**provider_data)
-
-
-@pytest.fixture
-async def test_booking(test_db, test_user, test_provider):
-    """Create a test booking."""
-    booking_data = {
-        "customer_id": str(test_user.id),
-        "provider_id": str(test_provider.id),
-        "service_type": "plumber",
-        "date": "2026-02-15",
-        "time": "14:00",
-        "duration_hours": 2.0,
-        "status": "completed",
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    }
-
-    result = await test_db.bookings.insert_one(booking_data)
-    booking_data["_id"] = str(result.inserted_id)
-    return Booking(**booking_data)
-
-
-@pytest.fixture
-def auth_headers(test_user):
-    """Create authentication headers for test user."""
-    token = create_access_token({"sub": str(test_user.id), "role": test_user.role})
-    return {"Authorization": f"Bearer {token}"}
 
 
 class TestHealthAndRoot:
@@ -164,10 +67,10 @@ class TestAuthentication:
         assert "password" not in data  # Password should not be returned
 
     @pytest.mark.asyncio
-    async def test_register_duplicate_user(self, async_client, test_user):
+    async def test_register_duplicate_user(self, async_client, test_user_customer):
         """Test registering a user with existing phone number."""
         user_data = {
-            "phone_number": test_user.phone_number,
+            "phone_number": test_user_customer.phone_number,
             "name": "Duplicate User",
             "password": "testpass123",
             "role": "customer"
@@ -178,10 +81,10 @@ class TestAuthentication:
         assert "already exists" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_login_success(self, async_client, test_user):
+    async def test_login_success(self, async_client, test_user_customer):
         """Test successful login."""
         login_data = {
-            "phone_number": test_user.phone_number,
+            "phone_number": test_user_customer.phone_number,
             "password": "testpass123"
         }
 
@@ -194,10 +97,10 @@ class TestAuthentication:
         assert "user" in data
 
     @pytest.mark.asyncio
-    async def test_login_wrong_password(self, async_client, test_user):
+    async def test_login_wrong_password(self, async_client, test_user_customer):
         """Test login with wrong password."""
         login_data = {
-            "phone_number": test_user.phone_number,
+            "phone_number": test_user_customer.phone_number,
             "password": "wrongpassword"
         }
 
