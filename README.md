@@ -40,19 +40,31 @@ hustlr/
    - Node.js 18+ (for WhatsApp integration)
    - AWS account (for Bedrock)
 
-2. **Install Dependencies**:
+2. **Install Python Dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Environment Variables**:
-   Create a `.env` file with:
+3. **Set up WhatsApp Integration** (Optional):
+   ```bash
+   cd whatsapp
+   npm install
+   cp .env.example .env
+   # Edit .env with your FastAPI URL
+   npm start
+   ```
+
+4. **Environment Variables**:
+   Create a `.env` file in the root directory with:
    ```
    MONGO_URI=mongodb://localhost:27017
    SECRET_KEY=your-secret-key-here
+   AWS_REGION=us-east-1
+   HUSTLR_AGENT_ID=your-bedrock-agent-id
+   HUSTLR_AGENT_ALIAS_ID=TSTALIASID
    ```
 
-4. **Run the Application**:
+5. **Run the Application**:
    ```bash
    cd backend
    python main.py
@@ -63,23 +75,31 @@ hustlr/
 ## API Endpoints
 
 ### Authentication
-- `POST /auth/register` - Register new user
-- `POST /auth/login` - User login
+- `POST /api/v1/auth/register` - Register new user
+- `POST /api/v1/auth/login` - User login
 
 ### Service Providers
-- `POST /providers/register` - Register as provider
-- `GET /providers/search` - Search providers
-- `GET /providers/{id}` - Get provider details
+- `POST /api/v1/providers/register` - Register as provider
+- `GET /api/v1/providers/search` - Search providers
+- `GET /api/v1/providers/{id}` - Get provider details
 
 ### Bookings
-- `POST /bookings` - Create booking
-- `GET /bookings` - Get user bookings
-- `PUT /bookings/{id}/status` - Update booking status
+- `POST /api/v1/bookings` - Create booking
+- `GET /api/v1/bookings` - Get user bookings
+- `PUT /api/v1/bookings/{id}/status` - Update booking status
+
+### WhatsApp Integration
+- `POST /api/v1/whatsapp/webhook` - Receive WhatsApp messages
+- `GET /api/v1/whatsapp/health` - WhatsApp integration health check
 
 ### Admin
-- `GET /admin/providers/pending` - Get pending verifications
-- `PUT /admin/providers/{id}/verify` - Verify provider
-- `GET /admin/stats` - System statistics
+- `GET /api/v1/admin/providers/pending` - Get pending verifications
+- `PUT /api/v1/admin/providers/{id}/verify` - Verify provider
+- `GET /api/v1/admin/stats` - System statistics
+
+### General
+- `GET /health` - API health check
+- `GET /` - API information
 
 ## Development
 
