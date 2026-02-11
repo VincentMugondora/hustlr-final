@@ -158,6 +158,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# WhatsApp auth files (contains sensitive session data)
+whatsapp/auth_info/
+
 # AWS credentials
 .aws/
 

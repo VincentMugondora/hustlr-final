@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from backend.db import connect_to_mongo, close_mongo_connection, create_indexes
-from backend.routes import auth, providers, bookings, admin
+from backend.routes import auth, providers, bookings, admin, whatsapp
 
 
 @asynccontextmanager
@@ -77,9 +77,9 @@ app.include_router(
     tags=["Bookings"]
 )
 app.include_router(
-    admin.router,
+    whatsapp.router,
     prefix="/api/v1",
-    tags=["Administration"]
+    tags=["WhatsApp"]
 )
 
 
