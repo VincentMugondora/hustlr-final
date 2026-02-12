@@ -95,7 +95,7 @@ async def test_get_and_update_my_provider_profile(async_client, override_current
 
     get_response = await async_client.get("/api/v1/providers/me")
     assert get_response.status_code == 200
-    assert get_response.json()["id"] == "provider-10"
+    assert get_response.json()["_id"] == "provider-10"
 
     update_response = await async_client.put(
         "/api/v1/providers/me",
@@ -154,7 +154,7 @@ async def test_provider_search_returns_only_verified(async_client, override_curr
 
     assert response.status_code == 200
     results = response.json()
-    ids = {item["id"] for item in results}
+    ids = {item["_id"] for item in results}
     assert "provider-verified" in ids
     assert "provider-unverified" not in ids
 
