@@ -7,7 +7,6 @@ from __future__ import annotations
 import copy
 import re
 from datetime import datetime
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -144,12 +143,21 @@ def fake_db(monkeypatch):
     async def _noop_async():
         return None
 
+    def _hash_password(password: str) -> str:
+        return f"fake-hash::{password}"
+
+    def _verify_password(password: str, hashed_password: str) -> bool:
+        return hashed_password == f"fake-hash::{password}"
+
     monkeypatch.setattr("backend.db.db", db)
     monkeypatch.setattr("backend.routes.auth.db", db)
     monkeypatch.setattr("backend.routes.providers.db", db)
     monkeypatch.setattr("backend.routes.bookings.db", db)
     monkeypatch.setattr("backend.routes.whatsapp.db", db)
     monkeypatch.setattr("backend.routes.admin.db", db)
+
+    monkeypatch.setattr("backend.routes.auth.get_password_hash", _hash_password)
+    monkeypatch.setattr("backend.routes.auth.verify_password", _verify_password)
 
     monkeypatch.setattr("backend.main.connect_to_mongo", _noop_async)
     monkeypatch.setattr("backend.main.create_indexes", _noop_async)
@@ -210,7 +218,15 @@ async def seeded_provider(fake_db):
         "location": "midtown",
         "description": "Licensed electrician",
         "hourly_rate": 80.0,
-        "availability": {"monday": "09:00-17:00"},
+        "availability": {
+            "monday": "09:00-17:00",
+            "tuesday": "09:00-17:00",
+            "wednesday": "09:00-17:00",
+            "thursday": "09:00-17:00",
+            "friday": "09:00-17:00",
+            "saturday": "09:00-17:00",
+            "sunday": "09:00-17:00",
+        },
         "is_verified": True,
         "verification_status": "verified",
         "rating": 4.5,
