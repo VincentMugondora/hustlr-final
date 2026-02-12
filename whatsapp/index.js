@@ -10,7 +10,6 @@ const {
     makeCacheableSignalKeyStore,
     Browsers,
 } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const axios = require('axios');
@@ -132,8 +131,11 @@ class WhatsAppManager {
     shouldReconnect(error) {
         if (!error) return true;
 
-        const boom = Boom.isBoom(error) ? error : new Boom(error);
-        const disconnectReason = boom?.output?.statusCode;
+        const disconnectReason =
+            error?.output?.statusCode ||
+            error?.data?.statusCode ||
+            error?.statusCode ||
+            error?.code;
 
         const noReconnectCodes = [
             DisconnectReason.loggedOut,
