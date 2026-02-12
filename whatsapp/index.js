@@ -9,7 +9,7 @@ const {
     useMultiFileAuthState,
     makeCacheableSignalKeyStore,
     Browsers,
-} = require('@adiwajshing/baileys');
+} = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
