@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.db import db
-from backend.models import Conversation
 from bedrock.agent import AgentResponse, invoke_agent
 
 logger = logging.getLogger(__name__)
@@ -106,12 +105,11 @@ async def whatsapp_webhook(message: WhatsAppMessage):
                 deduplicated=True,
             )
 
-        conversation = Conversation(
-            user_id=phone_number,
-            message=message.message.strip(),
-            timestamp=message.timestamp,
-        )
-        conversation_doc = conversation.model_dump()
+        conversation_doc = {
+            "user_id": phone_number,
+            "message": message.message.strip(),
+            "timestamp": message.timestamp,
+        }
         conversation_doc["source"] = message.source
         conversation_doc["sender"] = message.sender
         conversation_doc["message_id"] = message.messageId
