@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import pytest
 
-from backend.auth import verify_password
-
 
 @pytest.mark.asyncio
 async def test_register_success(async_client, fake_db):
@@ -29,8 +27,7 @@ async def test_register_success(async_client, fake_db):
     assert created is not None
     assert created["name"] == "Alice"
     assert created["role"] == "customer"
-    assert "hashed_password" in created
-    assert verify_password(payload["password"], created["hashed_password"])
+    assert created["hashed_password"] == "fake-hash::strongpass1"
 
 
 @pytest.mark.asyncio
@@ -41,7 +38,7 @@ async def test_register_duplicate_phone_rejected(async_client, fake_db):
             "phone_number": "+15551110002",
             "name": "Existing",
             "role": "customer",
-            "hashed_password": "hashed",
+            "hashed_password": "fake-hash::x",
         }
     )
 
@@ -60,7 +57,7 @@ async def test_register_duplicate_phone_rejected(async_client, fake_db):
 
 
 @pytest.mark.asyncio
-async def test_login_success(async_client, fake_db):
+async def test_login_success(async_client):
     registration = {
         "phone_number": "+15551110003",
         "name": "Bob",
