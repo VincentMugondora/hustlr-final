@@ -23,6 +23,7 @@ async def test_auth_register_awaits_async_db_calls(monkeypatch):
     )
     mock_db = SimpleNamespace(users=users_collection)
     monkeypatch.setattr(auth_routes, "db", mock_db)
+    monkeypatch.setattr(auth_routes, "get_password_hash", lambda password: f"fake-hash::{password}")
 
     user = UserCreate(
         phone_number="+15556660001",
