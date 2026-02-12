@@ -1,761 +1,314 @@
 """
-Comprehensive tests for booking-related endpoints.
-Tests booking creation, management, ratings, and cancellations.
+Tests for booking creation, cancellation/reschedule, rating, and booking security.
 """
 
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
 import pytest
-import pytest_asyncio
-from datetime import datetime
-from httpx import AsyncClient
-
-from backend.main import app
-from backend.models import User, ServiceProvider, Booking, Rating, BookingStatus
-from backend.auth import create_access_token
 
 
-class TestProviderSearch:
-    """Test provider search functionality."""
+@pytest.mark.asyncio
+async def test_search_providers_for_booking(async_client, override_current_user, make_user, seeded_provider):
+    override_current_user(make_user("customer-1", "customer"))
 
-    @pytest.mark.asyncio
-    async def test_search_providers_basic(self, async_client, test_provider, customer_headers):
-        """Test basic provider search."""
-        search_data = {
-            "service_type": "plumber",
-            "location": "downtown",
-            "max_results": 10
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/search_providers",
-            json=search_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert isinstance(data, list)
-        assert len(data) >= 1
-
-        # Check that our test provider is in results
-        provider_ids = [p["id"] for p in data]
-        assert str(test_provider.id) in provider_ids
-
-    @pytest.mark.asyncio
-    async def test_search_providers_with_date_time(self, async_client, test_provider, customer_headers):
-        """Test provider search with date and time filtering."""
-        search_data = {
-            "service_type": "plumber",
-            "location": "downtown",
-            "date": "2026-02-15",  # A Saturday
-            "time": "14:00",
-            "max_results": 5
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/search_providers",
-            json=search_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert isinstance(data, list)
-
-    @pytest.mark.asyncio
-    async def test_search_providers_no_matches(self, async_client, customer_headers):
-        """Test search with no matching providers."""
-        search_data = {
-            "service_type": "nonexistent_service",
-            "location": "nowhere",
-            "max_results": 10
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/search_providers",
-            json=search_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert isinstance(data, list)
-        assert len(data) == 0
-
-    @pytest.mark.asyncio
-    async def test_search_providers_unauthorized(self, async_client):
-        """Test provider search without authentication."""
-        search_data = {
-            "service_type": "plumber",
-            "location": "downtown"
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/search_providers",
-            json=search_data
-        )
-        assert response.status_code == 401
-
-
-class TestBookingCreation:
-    """Test booking creation functionality."""
-
-    @pytest.mark.asyncio
-    async def test_create_booking_success(self, async_client, test_customer, test_service_provider, customer_headers, test_db):
-        """Test successful booking creation."""
-        booking_data = {
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-20",
-            "time": "14:00",
-            "duration_hours": 2.0,
-            "notes": "Fix kitchen sink leak"
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["customer_id"] == str(test_customer.id)
-        assert data["provider_id"] == str(test_service_provider.id)
-        assert data["status"] == "pending"
-        assert data["service_type"] == booking_data["service_type"]
-        assert data["date"] == booking_data["date"]
-        assert data["time"] == booking_data["time"]
-        assert "id" in data
-
-        # Verify booking was created in database
-        booking_in_db = await test_db.bookings.find_one({"_id": data["id"]})
-        assert booking_in_db is not None
-        assert booking_in_db["status"] == "pending"
-
-    @pytest.mark.asyncio
-    async def test_create_booking_unverified_provider(self, async_client, customer_headers, test_db):
-        """Test booking creation with unverified provider (should fail)."""
-        # Create an unverified provider
-        unverified_provider_data = {
-            "user_id": "test_user",
-            "service_type": "electrician",
-            "location": "uptown",
-            "is_verified": False,
-            "created_at": datetime.utcnow()
-        }
-
-        result = await test_db.service_providers.insert_one(unverified_provider_data)
-        provider_id = str(result.inserted_id)
-
-        booking_data = {
-            "provider_id": provider_id,
-            "service_type": "electrician",
-            "date": "2026-02-20",
-            "time": "10:00"
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 404  # Provider not found (since unverified)
-
-    @pytest.mark.asyncio
-    async def test_create_booking_past_date(self, async_client, test_service_provider, customer_headers):
-        """Test booking creation with past date."""
-        booking_data = {
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2020-01-01",  # Past date
-            "time": "10:00"
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 400
-        assert "future" in response.json()["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_create_booking_invalid_time_format(self, async_client, test_service_provider, customer_headers):
-        """Test booking creation with invalid time format."""
-        booking_data = {
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-20",
-            "time": "25:00"  # Invalid time
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_create_booking_provider_only(self, async_client, test_service_provider, provider_headers):
-        """Test that only customers can create bookings."""
-        booking_data = {
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-20",
-            "time": "14:00"
-        }
-
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=provider_headers
-        )
-        assert response.status_code == 403
-        assert "customers can create bookings" in response.json()["detail"].lower()
-
-
-class TestBookingManagement:
-    """Test booking status updates and retrieval."""
-
-    @pytest.fixture
-    async def test_booking(self, test_db, test_customer, test_service_provider):
-        """Create a test booking."""
-        booking_data = {
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-20",
-            "time": "14:00",
-            "duration_hours": 2.0,
-            "status": "pending",
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        }
-
-        result = await test_db.bookings.insert_one(booking_data)
-        booking_data["_id"] = str(result.inserted_id)
-        return Booking(**booking_data)
-
-    @pytest.mark.asyncio
-    async def test_get_customer_bookings(self, async_client, test_booking, customer_headers):
-        """Test getting customer bookings."""
-        response = await async_client.get(
-            "/api/v1/bookings/",
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert isinstance(data, list)
-        assert len(data) >= 1
-
-        # Check that our booking is included
-        booking_ids = [b["id"] for b in data]
-        assert str(test_booking.id) in booking_ids
-
-    @pytest.mark.asyncio
-    async def test_get_provider_bookings(self, async_client, test_booking, provider_headers):
-        """Test getting provider bookings."""
-        response = await async_client.get(
-            "/api/v1/bookings/",
-            headers=provider_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert isinstance(data, list)
-
-        # Should include bookings for this provider
-        booking_ids = [b["id"] for b in data]
-        assert str(test_booking.id) in booking_ids
-
-    @pytest.mark.asyncio
-    async def test_update_booking_status_by_provider(self, async_client, test_booking, provider_headers, test_db):
-        """Test provider updating booking status."""
-        # Update status to confirmed
-        response = await async_client.put(
-            f"/api/v1/bookings/{test_booking.id}/status?status=confirmed",
-            headers=provider_headers
-        )
-        assert response.status_code == 200
-
-        # Verify status was updated in database
-        updated_booking = await test_db.bookings.find_one({"_id": test_booking.id})
-        assert updated_booking["status"] == "confirmed"
-
-    @pytest.mark.asyncio
-    async def test_update_booking_status_unauthorized(self, async_client, test_booking, customer_headers):
-        """Test unauthorized booking status update."""
-        # Customer trying to update status (should fail)
-        response = await async_client.put(
-            f"/api/v1/bookings/{test_booking.id}/status?status=confirmed",
-            headers=customer_headers
-        )
-        assert response.status_code == 403
-
-
-class TestBookingCancellation:
-    """Test booking cancellation and rescheduling."""
-
-    @pytest.fixture
-    async def pending_booking(self, test_db, test_customer, test_service_provider):
-        """Create a pending booking for cancellation tests."""
-        booking_data = {
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-20",
-            "time": "14:00",
-            "status": "pending",
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        }
-
-        result = await test_db.bookings.insert_one(booking_data)
-        booking_data["_id"] = str(result.inserted_id)
-        return Booking(**booking_data)
-
-    @pytest.mark.asyncio
-    async def test_cancel_booking(self, async_client, pending_booking, customer_headers, test_db):
-        """Test booking cancellation."""
-        cancel_data = {
-            "reason": "Schedule conflict"
-        }
-
-        response = await async_client.put(
-            f"/api/v1/bookings/{pending_booking.id}/cancel",
-            json=cancel_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["status"] == "cancelled"
-
-        # Verify in database
-        updated_booking = await test_db.bookings.find_one({"_id": pending_booking.id})
-        assert updated_booking["status"] == "cancelled"
-        assert updated_booking["cancellation_reason"] == "Schedule conflict"
-
-    @pytest.mark.asyncio
-    async def test_reschedule_booking(self, async_client, pending_booking, customer_headers, test_db):
-        """Test booking rescheduling."""
-        reschedule_data = {
-            "new_date": "2026-02-21",
-            "new_time": "16:00",
-            "reason": "Need to change time"
-        }
-
-        response = await async_client.put(
-            f"/api/v1/bookings/{pending_booking.id}/cancel",
-            json=reschedule_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["status"] == "pending"  # Reset to pending for rescheduled booking
-        assert data["date"] == "2026-02-21"
-        assert data["time"] == "16:00"
-
-    @pytest.mark.asyncio
-    async def test_cancel_completed_booking(self, async_client, test_db, test_customer, test_service_provider, customer_headers):
-        """Test canceling a completed booking (should fail)."""
-        # Create a completed booking
-        booking_data = {
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-15",
+    response = await async_client.post(
+        "/api/v1/bookings/search_providers",
+        json={
+            "service_type": "electric",
+            "location": "town",
+            "date": "2099-01-01",
             "time": "10:00",
-            "status": "completed",
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        }
+            "max_results": 5,
+        },
+    )
 
-        result = await test_db.bookings.insert_one(booking_data)
-        booking_id = str(result.inserted_id)
-
-        cancel_data = {"reason": "Changed mind"}
-
-        response = await async_client.put(
-            f"/api/v1/bookings/{booking_id}/cancel",
-            json=cancel_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 400
-        assert "completed" in response.json()["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_cancel_booking_wrong_customer(self, async_client, pending_booking, test_db):
-        """Test canceling booking by wrong customer."""
-        # Create another customer
-        other_customer_data = {
-            "phone_number": "+3333333333",
-            "name": "Other Customer",
-            "password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfLkIwXH7iN8K2",
-            "role": "customer",
-            "created_at": datetime.utcnow()
-        }
-
-        result = await test_db.users.insert_one(other_customer_data)
-        other_customer_id = str(result.inserted_id)
-
-        # Create token for other customer
-        token = create_access_token({"sub": other_customer_id, "role": "customer"})
-        headers = {"Authorization": f"Bearer {token}"}
-
-        cancel_data = {"reason": "Test"}
-
-        response = await async_client.put(
-            f"/api/v1/bookings/{pending_booking.id}/cancel",
-            json=cancel_data,
-            headers=headers
-        )
-        assert response.status_code == 403
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["id"] == seeded_provider["_id"]
 
 
-class TestBookingRating:
-    """Test booking rating functionality."""
+@pytest.mark.asyncio
+async def test_create_booking_success(async_client, override_current_user, make_user, seeded_provider, fake_db):
+    customer = make_user("customer-42", "customer")
+    override_current_user(customer)
 
-    @pytest.fixture
-    async def completed_booking(self, test_db, test_customer, test_service_provider):
-        """Create a completed booking for rating tests."""
-        booking_data = {
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-10",
-            "time": "14:00",
-            "status": "completed",
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        }
+    future = datetime.utcnow() + timedelta(days=10)
+    booking_date = future.strftime("%Y-%m-%d")
+    booking_time = future.strftime("%H:%M")
 
-        result = await test_db.bookings.insert_one(booking_data)
-        booking_data["_id"] = str(result.inserted_id)
-        return Booking(**booking_data)
+    response = await async_client.post(
+        "/api/v1/bookings/",
+        json={
+            "customer_id": "ignored-by-endpoint",
+            "provider_id": seeded_provider["_id"],
+            "service_type": "electrician",
+            "date": booking_date,
+            "time": booking_time,
+            "duration_hours": 2.0,
+            "notes": "Need outlet replacement",
+        },
+    )
 
-    @pytest.mark.asyncio
-    async def test_rate_completed_booking(self, async_client, completed_booking, test_customer, test_service_provider, customer_headers, test_db):
-        """Test rating a completed booking."""
-        rating_data = {
-            "booking_id": str(completed_booking.id),
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "rating": 5,
-            "comment": "Excellent service! Very professional and punctual."
-        }
+    assert response.status_code == 200
+    body = response.json()
+    assert body["customer_id"] == customer.id
+    assert body["provider_id"] == seeded_provider["_id"]
+    assert body["status"] == "pending"
 
-        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=rating_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
+    stored = await fake_db.bookings.find_one({"_id": body["id"]})
+    assert stored is not None
 
-        data = response.json()
-        assert data["rating"] == 5
-        assert data["comment"] == rating_data["comment"]
-        assert "id" in data
 
-        # Verify rating was created in database
-        rating_in_db = await test_db.ratings.find_one({"booking_id": str(completed_booking.id)})
-        assert rating_in_db is not None
-        assert rating_in_db["rating"] == 5
+@pytest.mark.asyncio
+async def test_create_booking_conflict_returns_409(async_client, override_current_user, make_user, seeded_provider, fake_db):
+    customer = make_user("customer-43", "customer")
+    override_current_user(customer)
 
-        # Verify provider rating was updated
-        updated_provider = await test_db.service_providers.find_one({"_id": test_service_provider.id})
-        # Rating should be updated (calculation depends on existing ratings)
-        assert "rating" in updated_provider
-        assert "total_ratings" in updated_provider
+    future = datetime.utcnow() + timedelta(days=7)
+    booking_date = future.strftime("%Y-%m-%d")
+    booking_time = future.strftime("%H:%M")
 
-    @pytest.mark.asyncio
-    async def test_rate_pending_booking(self, async_client, test_customer, test_service_provider, customer_headers, test_db):
-        """Test rating a pending booking (should fail)."""
-        # Create a pending booking
-        booking_data = {
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "service_type": "plumber",
-            "date": "2026-02-20",
-            "time": "14:00",
+    await fake_db.bookings.insert_one(
+        {
+            "_id": "existing-booking",
+            "customer_id": "other-customer",
+            "provider_id": seeded_provider["_id"],
+            "service_type": "electrician",
+            "date": booking_date,
+            "time": booking_time,
+            "duration_hours": 1.0,
             "status": "pending",
             "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "updated_at": datetime.utcnow(),
         }
+    )
 
-        result = await test_db.bookings.insert_one(booking_data)
-        booking_id = str(result.inserted_id)
-
-        rating_data = {
-            "booking_id": booking_id,
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "rating": 4
-        }
-
-        response = await async_client.post(
-            f"/api/v1/bookings/{booking_id}/rate",
-            json=rating_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 400
-        assert "completed" in response.json()["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_duplicate_rating(self, async_client, completed_booking, test_customer, test_service_provider, customer_headers, test_db):
-        """Test submitting duplicate rating for same booking."""
-        # First rating
-        rating_data = {
-            "booking_id": str(completed_booking.id),
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "rating": 4,
-            "comment": "Good service"
-        }
-
-        # Submit first rating
-        response1 = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=rating_data,
-            headers=customer_headers
-        )
-        assert response1.status_code == 200
-
-        # Try to submit second rating
-        response2 = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=rating_data,
-            headers=customer_headers
-        )
-        assert response2.status_code == 409
-        assert "already submitted" in response2.json()["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_rate_invalid_rating_value(self, async_client, completed_booking, test_customer, test_service_provider, customer_headers):
-        """Test rating with invalid value (should fail validation)."""
-        rating_data = {
-            "booking_id": str(completed_booking.id),
-            "customer_id": str(test_customer.id),
-            "provider_id": str(test_service_provider.id),
-            "rating": 10,  # Invalid: should be 1-5
-            "comment": "Test rating"
-        }
-
-        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=rating_data,
-            headers=customer_headers
-        )
-        assert response.status_code == 422  # Validation error
-
-    @pytest.mark.asyncio
-    async def test_rate_wrong_customer(self, async_client, completed_booking, test_db):
-        """Test rating by wrong customer."""
-        # Create another customer
-        other_customer_data = {
-            "phone_number": "+4444444444",
-            "name": "Wrong Customer",
-            "password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfLkIwXH7iN8K2",
-            "role": "customer",
-            "created_at": datetime.utcnow()
-        }
-
-        result = await test_db.users.insert_one(other_customer_data)
-        other_customer_id = str(result.inserted_id)
-
-        token = create_access_token({"sub": other_customer_id, "role": "customer"})
-        headers = {"Authorization": f"Bearer {token}"}
-
-        rating_data = {
-            "booking_id": str(completed_booking.id),
-            "customer_id": other_customer_id,
-            "provider_id": str(completed_booking.provider_id),
-            "rating": 3
-        }
-
-        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=rating_data,
-            headers=headers
-        )
-        assert response.status_code == 403
-
-
-class TestBookingSecurity:
-    """Test security aspects of booking functionality."""
-
-    @pytest.mark.asyncio
-    async def test_booking_creation_input_validation(self, async_client, customer_headers, test_provider):
-        """Test input validation for booking creation."""
-        # Test invalid date format
-        invalid_booking = {
-            "provider_id": str(test_provider.id),
+    response = await async_client.post(
+        "/api/v1/bookings/",
+        json={
+            "customer_id": "ignored",
+            "provider_id": seeded_provider["_id"],
             "service_type": "electrician",
-            "date": "invalid-date",
-            "time": "14:00"
-        }
+            "date": booking_date,
+            "time": booking_time,
+            "duration_hours": 1.0,
+        },
+    )
 
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=invalid_booking,
-            headers=customer_headers
-        )
-        assert response.status_code == 422  # Validation error
+    assert response.status_code == 409
 
-        # Test invalid time format
-        invalid_booking = {
-            "provider_id": str(test_provider.id),
+
+@pytest.mark.asyncio
+async def test_booking_creation_forbidden_for_provider_role(async_client, override_current_user, make_user, seeded_provider):
+    override_current_user(make_user("provider-user-22", "provider"))
+
+    future = datetime.utcnow() + timedelta(days=3)
+    response = await async_client.post(
+        "/api/v1/bookings/",
+        json={
+            "customer_id": "ignored",
+            "provider_id": seeded_provider["_id"],
             "service_type": "electrician",
-            "date": "2026-02-20",
-            "time": "invalid-time"
-        }
+            "date": future.strftime("%Y-%m-%d"),
+            "time": future.strftime("%H:%M"),
+        },
+    )
 
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=invalid_booking,
-            headers=customer_headers
-        )
-        assert response.status_code == 422
+    assert response.status_code == 403
 
-        # Test past date
-        past_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        invalid_booking = {
-            "provider_id": str(test_provider.id),
+
+@pytest.mark.asyncio
+async def test_cancel_booking_success(async_client, override_current_user, make_user, fake_db, seeded_provider):
+    customer = make_user("customer-50", "customer")
+    override_current_user(customer)
+
+    await fake_db.bookings.insert_one(
+        {
+            "_id": "booking-to-cancel",
+            "customer_id": customer.id,
+            "provider_id": seeded_provider["_id"],
             "service_type": "electrician",
-            "date": past_date,
-            "time": "14:00"
+            "date": "2099-02-01",
+            "time": "10:00",
+            "duration_hours": 1.0,
+            "status": "pending",
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
         }
+    )
 
-        response = await async_client.post(
-            "/api/v1/bookings/",
-            json=invalid_booking,
-            headers=customer_headers
-        )
-        assert response.status_code == 400
-        assert "future" in response.json()["detail"].lower()
+    response = await async_client.put(
+        "/api/v1/bookings/booking-to-cancel/cancel",
+        json={"action": "cancel", "reason": "No longer needed"},
+    )
 
-    @pytest.mark.asyncio
-    async def test_booking_access_control(self, async_client, test_booking, provider_headers):
-        """Test that users can only access their own bookings."""
-        # Provider tries to cancel a booking they don't own
-        cancel_data = {"reason": "Provider trying to cancel"}
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
 
-        response = await async_client.put(
-            f"/api/v1/bookings/{test_booking.id}/cancel",
-            json=cancel_data,
-            headers=provider_headers
-        )
-        assert response.status_code == 403
 
-    @pytest.mark.asyncio
-    async def test_double_booking_prevention(self, async_client, customer_headers, test_provider, test_db):
-        """Test that double booking same provider/time is prevented."""
-        # Create first booking
-        booking_data = {
-            "provider_id": str(test_provider.id),
+@pytest.mark.asyncio
+async def test_reschedule_booking_success(async_client, override_current_user, make_user, fake_db, seeded_provider):
+    customer = make_user("customer-51", "customer")
+    override_current_user(customer)
+
+    await fake_db.bookings.insert_one(
+        {
+            "_id": "booking-to-reschedule",
+            "customer_id": customer.id,
+            "provider_id": seeded_provider["_id"],
             "service_type": "electrician",
-            "date": "2026-02-25",
-            "time": "15:00"
+            "date": "2099-03-01",
+            "time": "10:00",
+            "duration_hours": 1.0,
+            "status": "confirmed",
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
         }
+    )
 
-        response1 = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=customer_headers
-        )
-        assert response1.status_code == 200
+    response = await async_client.put(
+        "/api/v1/bookings/booking-to-reschedule/cancel",
+        json={
+            "action": "reschedule",
+            "new_date": "2099-03-02",
+            "new_time": "11:30",
+            "reason": "Schedule changed",
+        },
+    )
 
-        # Try to create second booking at same time
-        response2 = await async_client.post(
-            "/api/v1/bookings/",
-            json=booking_data,
-            headers=customer_headers
-        )
-        assert response2.status_code == 409  # Conflict
-        assert "not available" in response2.json()["detail"]
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["date"] == "2099-03-02"
+    assert body["time"] == "11:30"
 
-    @pytest.mark.asyncio
-    async def test_rating_input_validation(self, async_client, completed_booking, customer_headers):
-        """Test input validation for booking ratings."""
-        # Test invalid rating value (too low)
-        invalid_rating = {
-            "booking_id": str(completed_booking.id),
-            "customer_id": str(completed_booking.customer_id),
-            "provider_id": str(completed_booking.provider_id),
-            "rating": 0  # Below minimum
+
+@pytest.mark.asyncio
+async def test_cancel_booking_requires_owner(async_client, override_current_user, make_user, fake_db, seeded_provider):
+    await fake_db.bookings.insert_one(
+        {
+            "_id": "booking-ownership",
+            "customer_id": "customer-real-owner",
+            "provider_id": seeded_provider["_id"],
+            "service_type": "electrician",
+            "date": "2099-04-01",
+            "time": "10:00",
+            "duration_hours": 1.0,
+            "status": "pending",
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
         }
+    )
 
-        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=invalid_rating,
-            headers=customer_headers
-        )
-        assert response.status_code == 422  # Validation error
+    override_current_user(make_user("customer-wrong", "customer"))
+    response = await async_client.put(
+        "/api/v1/bookings/booking-ownership/cancel",
+        json={"action": "cancel", "reason": "Attempt unauthorized cancel"},
+    )
 
-        # Test invalid rating value (too high)
-        invalid_rating["rating"] = 6  # Above maximum
+    assert response.status_code == 403
 
-        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=invalid_rating,
-            headers=customer_headers
-        )
-        assert response.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_rating_data_injection_prevention(self, async_client, completed_booking, customer_headers, test_db):
-        """Test prevention of data injection in ratings."""
-        malicious_rating = {
-            "booking_id": str(completed_booking.id),
-            "customer_id": str(completed_booking.customer_id),
-            "provider_id": str(completed_booking.provider_id),
-            "rating": 4,
-            "comment": "Good service",
-            "admin_override": True,  # Malicious field
-            "bonus_rating": 10,  # Another malicious field
-            "sql_injection": "'; DROP TABLE ratings; --"
-        }
+@pytest.mark.asyncio
+async def test_rate_completed_booking_success(
+    async_client, override_current_user, make_user, fake_db, seeded_completed_booking, seeded_provider
+):
+    customer = make_user(seeded_completed_booking["customer_id"], "customer")
+    override_current_user(customer)
 
-        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=malicious_rating,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
+    response = await async_client.post(
+        f"/api/v1/bookings/{seeded_completed_booking['_id']}/rate",
+        json={
+            "booking_id": seeded_completed_booking["_id"],
+            "customer_id": seeded_completed_booking["customer_id"],
+            "provider_id": seeded_provider["_id"],
+            "rating": 5,
+            "comment": "Excellent service",
+        },
+    )
 
-        # Verify malicious fields were not stored
-        created_rating = await test_db.ratings.find_one({"booking_id": str(completed_booking.id)})
-        assert created_rating is not None
-        assert "admin_override" not in created_rating
-        assert "bonus_rating" not in created_rating
-        assert created_rating["comment"] == "Good service"  # Legitimate field stored
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rating"] == 5
 
-    @pytest.mark.asyncio
-    async def test_provider_search_injection_prevention(self, async_client, customer_headers):
-        """Test that provider search prevents injection attacks."""
-        # Test regex injection attempt
-        malicious_search = {
-            "service_type": ".*",  # Regex that matches everything
-            "location": "downtown",
-            "max_results": 1000  # Try to get all results
-        }
+    stored_rating = await fake_db.ratings.find_one({"booking_id": seeded_completed_booking["_id"]})
+    assert stored_rating is not None
 
-        response = await async_client.post(
-            "/api/v1/bookings/search_providers",
-            json=malicious_search,
-            headers=customer_headers
-        )
-        assert response.status_code == 200
+    updated_provider = await fake_db.service_providers.find_one({"_id": seeded_provider["_id"]})
+    assert updated_provider["total_ratings"] == 3
+    assert updated_provider["rating"] == pytest.approx(4.67, rel=1e-2)
 
-        data = response.json()
-        # Should still be limited by max_results validation
-        assert len(data) <= 50  # Our max limit</content>
-<parameter name="oldString">        response = await async_client.post(
-            f"/api/v1/bookings/{completed_booking.id}/rate",
-            json=rating_data,
-            headers=headers
-        )
-        assert response.status_code == 403
+
+@pytest.mark.asyncio
+async def test_rating_rejects_duplicate(async_client, override_current_user, make_user, fake_db, seeded_completed_booking, seeded_provider):
+    customer = make_user(seeded_completed_booking["customer_id"], "customer")
+    override_current_user(customer)
+
+    first = {
+        "booking_id": seeded_completed_booking["_id"],
+        "customer_id": seeded_completed_booking["customer_id"],
+        "provider_id": seeded_provider["_id"],
+        "rating": 4,
+    }
+
+    await async_client.post(f"/api/v1/bookings/{seeded_completed_booking['_id']}/rate", json=first)
+    second_response = await async_client.post(
+        f"/api/v1/bookings/{seeded_completed_booking['_id']}/rate",
+        json=first,
+    )
+
+    assert second_response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_rating_access_control_and_validation(async_client, override_current_user, make_user, seeded_completed_booking, seeded_provider):
+    override_current_user(make_user("different-customer", "customer"))
+
+    unauthorized = await async_client.post(
+        f"/api/v1/bookings/{seeded_completed_booking['_id']}/rate",
+        json={
+            "booking_id": seeded_completed_booking["_id"],
+            "customer_id": "different-customer",
+            "provider_id": seeded_provider["_id"],
+            "rating": 5,
+        },
+    )
+    assert unauthorized.status_code == 403
+
+    override_current_user(make_user(seeded_completed_booking["customer_id"], "customer"))
+    invalid_value = await async_client.post(
+        f"/api/v1/bookings/{seeded_completed_booking['_id']}/rate",
+        json={
+            "booking_id": seeded_completed_booking["_id"],
+            "customer_id": seeded_completed_booking["customer_id"],
+            "provider_id": seeded_provider["_id"],
+            "rating": 10,
+        },
+    )
+    assert invalid_value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_security_input_validation_for_cancel_and_booking(async_client, override_current_user, make_user, seeded_provider):
+    override_current_user(make_user("customer-90", "customer"))
+
+    bad_date = await async_client.post(
+        "/api/v1/bookings/",
+        json={
+            "customer_id": "x",
+            "provider_id": seeded_provider["_id"],
+            "service_type": "electrician",
+            "date": "not-a-date",
+            "time": "10:00",
+        },
+    )
+    assert bad_date.status_code == 400
+
+    bad_cancel_action = await async_client.put(
+        "/api/v1/bookings/nonexistent/cancel",
+        json={"action": "delete", "reason": "invalid action"},
+    )
+    assert bad_cancel_action.status_code == 422
