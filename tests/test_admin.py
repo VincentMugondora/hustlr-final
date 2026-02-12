@@ -338,5 +338,4 @@ class TestAdminSecurity:
 
         # Verify that only expected fields were updated
         updated_provider = await test_db.service_providers.find_one({"_id": provider_id})
-        assert "admin_override" not in updated_provider  # Malicious field should not exist</content>
-<parameter name="filePath">c:\Users\vinmu\Desktop\hustlr-final\tests\test_admin.py
+        assert "admin_override" not in updated_provider  # Malicious field should not exist

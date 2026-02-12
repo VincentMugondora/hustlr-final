@@ -276,5 +276,4 @@ class TestSecurity:
         """Placeholder for rate limiting tests (would need middleware)."""
         # Multiple rapid requests should be rate limited
         # This is a placeholder - actual implementation would require rate limiting middleware
-        pass</content>
-<parameter name="filePath">c:\Users\vinmu\Desktop\hustlr-final\tests\test_auth.py
+        pass
