@@ -1,6 +1,6 @@
 # WhatsApp Integration for Hustlr
 
-This directory contains the WhatsApp integration using Baileys library for the Hustlr platform.
+This directory contains the WhatsApp integration using Baileys for the Hustlr platform.
 
 ## Files
 
@@ -20,6 +20,9 @@ This directory contains the WhatsApp integration using Baileys library for the H
    Copy `.env.example` to `.env` and configure:
    ```env
    FASTAPI_BASE_URL=http://localhost:8000
+   FASTAPI_TIMEOUT_MS=15000
+   FORWARD_RETRY_ATTEMPTS=3
+   FORWARD_RETRY_DELAY_MS=1000
    ```
 
 3. **Run the Service**:
@@ -34,37 +37,35 @@ This directory contains the WhatsApp integration using Baileys library for the H
 
 ## Features
 
-- **QR Code Authentication**: Scan QR code for initial WhatsApp Web login
-- **Persistent Sessions**: Multi-file auth state for session persistence
-- **Message Forwarding**: Automatically forwards incoming messages to FastAPI backend
-- **Reconnection Handling**: Automatic reconnection on connection loss
-- **Error Recovery**: Comprehensive error handling and logging
-- **Message Acknowledgements**: Proper message read receipts
+- QR code authentication for initial WhatsApp Web login
+- Persistent sessions using multi-file auth state
+- Automatic forwarding of user messages to FastAPI backend
+- FastAPI webhook invokes Bedrock agent and returns `reply_text`
+- Baileys sends agent reply back to the user
+- Retry, timeout, acknowledgement, and structured logging
+- Automatic reconnection on transient disconnects
 
 ## Message Flow
 
 ```
-WhatsApp → Baileys → index.js → FastAPI (/api/v1/whatsapp/webhook) → Bedrock Agent → Response → WhatsApp
+WhatsApp User
+  -> Baileys (`whatsapp/index.js`)
+  -> FastAPI (`POST /api/v1/whatsapp/webhook`)
+  -> Bedrock (`invoke_agent`)
+  -> FastAPI returns `reply_text`
+  -> Baileys sends response to WhatsApp user
 ```
 
-## Security Considerations
+## Production Notes
 
-- **Session Storage**: Auth files are stored locally (add to .gitignore)
-- **Rate Limiting**: Implement rate limiting in production
-- **Message Validation**: Validate incoming messages before processing
-- **Error Handling**: Don't expose internal errors to users
-
-## Production Deployment
-
-- Use PM2 or similar process manager
-- Set up proper logging (Winston recommended)
-- Configure health checks
-- Monitor memory usage (Baileys can be memory-intensive)
-- Set up backup/restore for auth state
+- Store auth state securely and never commit auth files.
+- Keep timeout and retry settings conservative to avoid duplicate sends.
+- Monitor logs for backend latency spikes and repeated forward failures.
+- Consider adding external monitoring and process supervision (PM2/systemd).
 
 ## Troubleshooting
 
-- **QR Code not appearing**: Check console output, ensure no existing session
-- **Connection issues**: Check internet connection, WhatsApp Web status
-- **Backend forwarding fails**: Verify FastAPI is running and endpoint exists
-- **Memory usage**: Monitor and restart periodically if needed
+- **QR code not appearing**: Ensure no stale auth session and check console output.
+- **No WhatsApp reply**: Verify FastAPI webhook response includes `reply_text`.
+- **Backend forwarding fails**: Check FastAPI URL, service health, and network path.
+- **Frequent reconnects**: Check WhatsApp session validity and network stability.
