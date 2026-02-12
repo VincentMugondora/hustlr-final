@@ -42,6 +42,7 @@ class WhatsAppResponse(BaseModel):
     reply_text: Optional[str] = None
     conversation_id: Optional[str] = None
     message_id: Optional[str] = None
+    deduplicated: bool = False
     error: Optional[str] = None
 
 
@@ -89,12 +90,34 @@ async def whatsapp_webhook(message: WhatsAppMessage):
             message.messageId,
         )
 
+        # Idempotency guard: if we have already processed this message ID,
+        # return the previous reply and do not invoke the agent again.
+        existing_conversation = await db.conversations.find_one(
+            {"source": message.source, "message_id": message.messageId}
+        )
+        if existing_conversation:
+            existing_reply = existing_conversation.get("response") or DEFAULT_ERROR_REPLY
+            return WhatsAppResponse(
+                success=True,
+                message="Duplicate message already processed",
+                reply_text=existing_reply,
+                conversation_id=str(existing_conversation.get("_id")),
+                message_id=message.messageId,
+                deduplicated=True,
+            )
+
         conversation = Conversation(
             user_id=phone_number,
             message=message.message.strip(),
             timestamp=message.timestamp,
         )
-        insert_result = await db.conversations.insert_one(conversation.dict())
+        conversation_doc = conversation.model_dump()
+        conversation_doc["source"] = message.source
+        conversation_doc["sender"] = message.sender
+        conversation_doc["message_id"] = message.messageId
+        conversation_doc["processing_status"] = "received"
+
+        insert_result = await db.conversations.insert_one(conversation_doc)
         conversation_id = str(insert_result.inserted_id)
 
         agent_response = await invoke_agent(message.message.strip(), session_id)
@@ -108,6 +131,7 @@ async def whatsapp_webhook(message: WhatsAppMessage):
                     "agent_success": agent_response.success,
                     "action_group": agent_response.action_group,
                     "agent_error": agent_response.error_message,
+                    "processing_status": "completed",
                 }
             },
         )
@@ -118,6 +142,7 @@ async def whatsapp_webhook(message: WhatsAppMessage):
             reply_text=reply_text,
             conversation_id=conversation_id,
             message_id=message.messageId,
+            deduplicated=False,
         )
 
     except HTTPException:
@@ -129,7 +154,13 @@ async def whatsapp_webhook(message: WhatsAppMessage):
             try:
                 await db.conversations.update_one(
                     {"_id": conversation_id},
-                    {"$set": {"response": DEFAULT_ERROR_REPLY, "processing_error": str(exc)}},
+                    {
+                        "$set": {
+                            "response": DEFAULT_ERROR_REPLY,
+                            "processing_error": str(exc),
+                            "processing_status": "failed",
+                        }
+                    },
                 )
             except Exception:
                 logger.exception("Failed to update conversation with fallback error response")
@@ -140,6 +171,7 @@ async def whatsapp_webhook(message: WhatsAppMessage):
             reply_text=DEFAULT_ERROR_REPLY,
             message_id=message.messageId,
             conversation_id=conversation_id,
+            deduplicated=False,
             error="internal_error",
         )
 

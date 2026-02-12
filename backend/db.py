@@ -59,6 +59,13 @@ async def create_indexes():
     # Index for conversations by user_id
     # Used to retrieve conversation history for AI context
     await db.conversations.create_index("user_id")
+    # Unique index for WhatsApp message deduplication by source+message_id
+    # Prevents duplicate processing during retries/re-deliveries
+    await db.conversations.create_index(
+        [("source", ASCENDING), ("message_id", ASCENDING)],
+        unique=True,
+        sparse=True
+    )
 
     # Index for ratings by provider_id
     # Used to quickly calculate average ratings for providers
