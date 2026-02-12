@@ -9,6 +9,7 @@ const {
     useMultiFileAuthState,
     makeCacheableSignalKeyStore,
     Browsers,
+    fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
@@ -66,14 +67,17 @@ class WhatsAppManager {
 
     async initialize() {
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+        const { version, isLatest } = await fetchLatestBaileysVersion();
 
         Logger.info('Initializing WhatsApp connection');
+        Logger.info(`Using WA Web version ${version.join('.')} (isLatest=${isLatest})`);
 
         this.sock = makeWASocket({
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, console),
             },
+            version,
             browser: Browsers.macOS('Desktop'),
         });
 
