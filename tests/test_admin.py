@@ -55,7 +55,7 @@ async def test_admin_verify_provider_and_stats(fake_db, make_user):
 
 
 @pytest.mark.asyncio
-async def test_admin_verify_nonexistent_provider_raises_404(make_user):
+async def test_admin_verify_nonexistent_provider_raises_404(fake_db, make_user):
     with pytest.raises(HTTPException) as exc:
         await admin.verify_provider(
             provider_id="missing-provider",

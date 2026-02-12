@@ -18,8 +18,6 @@ async def test_search_providers_for_booking(async_client, override_current_user,
         json={
             "service_type": "electric",
             "location": "town",
-            "date": "2099-01-01",
-            "time": "10:00",
             "max_results": 5,
         },
     )
@@ -58,7 +56,7 @@ async def test_create_booking_success(async_client, override_current_user, make_
     assert body["provider_id"] == seeded_provider["_id"]
     assert body["status"] == "pending"
 
-    stored = await fake_db.bookings.find_one({"_id": body["id"]})
+    stored = await fake_db.bookings.find_one({"_id": body["_id"]})
     assert stored is not None
 
 
