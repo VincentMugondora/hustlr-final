@@ -75,9 +75,7 @@ class WhatsAppManager {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, console),
             },
-            printQRInTerminal: true,
             browser: Browsers.macOS('Desktop'),
-            logger: { level: 'silent' },
         });
 
         this.bindEventHandlers(saveCreds);
