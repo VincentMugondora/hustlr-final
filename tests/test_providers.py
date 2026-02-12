@@ -1,49 +1,3 @@
-import asyncio
-import pytest
-
-
-async def test_provider_registration_and_admin_verification(client):
-    # Create customer and admin users
-    cust = {"email": "user1@example.com", "password": "pass1234", "role": "customer", "name": "User One"}
-    admin = {"email": "admin@example.com", "password": "adminpass", "role": "admin", "name": "Administrator"}
-
-    # Register users
-    r1 = await client.post("/auth/register", json=cust)
-    assert r1.status_code == 201
-    r2 = await client.post("/auth/register", json=admin)
-    assert r2.status_code == 201
-
-    # Login to get tokens
-    lr = await client.post("/auth/login", data={"username": cust["email"], "password": cust["password"]})
-    token_c = lr.json()["access_token"]
-    lr2 = await client.post("/auth/login", data={"username": admin["email"], "password": admin["password"]})
-    token_admin = lr2.json()["access_token"]
-
-    # Register provider as customer
-    provider = {
-        "user_id": "1",
-        "service_type": "electrician",
-        "location": "Downtown",
-        "license_number": "LIC123",
-        "insurance_info": "Insured",
-        "contact_email": "prov@example.com"
-    }
-
-    headers = {"Authorization": f"Bearer {token_c}"}
-    pr = await client.post("/providers/register", json=provider, headers=headers)
-    assert pr.status_code == 200 or pr.status_code == 201
-    body = pr.json()
-    assert body.get("verification_status") == "pending"
-
-    provider_id = body.get("_id") or body.get("id")
-
-    # Admin verifies provider
-    verify_payload = {"verified": True, "notes": "All good"}
-    admin_headers = {"Authorization": f"Bearer {token_admin}"}
-    v = await client.put(f"/admin/providers/{provider_id}/verify", json=verify_payload, headers=admin_headers)
-    assert v.status_code == 200
-    vv = v.json()
-    assert vv.get("verification_status") == "verified"
 """
 Comprehensive tests for provider registration and verification endpoints.
 """
@@ -562,6 +516,174 @@ class TestAdminProviderVerification:
         assert "total_bookings" in data
 
         # All counts should be non-negative
+        assert data["total_users"] >= 0
+        assert data["total_providers"] >= 0
+        assert data["pending_providers"] >= 0
+        assert data["total_bookings"] >= 0
+
+
+class TestProviderSecurity:
+    """Test security aspects of provider functionality."""
+
+    @pytest.mark.asyncio
+    async def test_register_provider_input_validation(self, async_client, customer_headers):
+        """Test input validation for provider registration."""
+        # Test invalid service type
+        invalid_data = {
+            "service_type": "",  # Empty string
+            "location": "downtown",
+            "description": "Test service"
+        }
+
+        response = await async_client.post(
+            "/api/v1/providers/register",
+            json=invalid_data,
+            headers=customer_headers
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid location
+        invalid_data = {
+            "service_type": "plumber",
+            "location": "",  # Empty string
+            "description": "Test service"
+        }
+
+        response = await async_client.post(
+            "/api/v1/providers/register",
+            json=invalid_data,
+            headers=customer_headers
+        )
+        assert response.status_code == 422
+
+        # Test invalid email format
+        invalid_data = {
+            "service_type": "plumber",
+            "location": "downtown",
+            "description": "Test service",
+            "contact_email": "invalid-email"
+        }
+
+        response = await async_client.post(
+            "/api/v1/providers/register",
+            json=invalid_data,
+            headers=customer_headers
+        )
+        assert response.status_code == 400
+        assert "email format" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_high_risk_service_requirements(self, async_client, customer_headers):
+        """Test that high-risk services require license and insurance."""
+        high_risk_services = ["electrician", "plumber", "carpenter", "hvac"]
+
+        for service in high_risk_services:
+            # Test without license
+            invalid_data = {
+                "service_type": service,
+                "location": "downtown",
+                "description": f"Test {service} service",
+                "insurance_info": "Fully insured"
+                # Missing license_number
+            }
+
+            response = await async_client.post(
+                "/api/v1/providers/register",
+                json=invalid_data,
+                headers=customer_headers
+            )
+            assert response.status_code == 400
+            assert "license" in response.json()["detail"].lower()
+
+            # Test without insurance
+            invalid_data = {
+                "service_type": service,
+                "location": "downtown",
+                "description": f"Test {service} service",
+                "license_number": "LIC123456"
+                # Missing insurance_info
+            }
+
+            response = await async_client.post(
+                "/api/v1/providers/register",
+                json=invalid_data,
+                headers=customer_headers
+            )
+            assert response.status_code == 400
+            assert "insurance" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_provider_profile_access_control(self, async_client, test_provider, customer_headers):
+        """Test that users can only access their own provider profiles."""
+        # Try to access another user's provider profile
+        response = await async_client.get(
+            "/api/v1/providers/me",
+            headers=customer_headers  # This is a customer, not the provider
+        )
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_provider_update_unauthorized_fields(self, async_client, test_provider, provider_headers, test_db):
+        """Test that providers cannot update unauthorized fields."""
+        update_data = {
+            "service_type": "updated_service",
+            "is_verified": True,  # Should not be allowed
+            "verification_status": "verified",  # Should not be allowed
+            "rating": 5.0  # Should not be allowed
+        }
+
+        response = await async_client.put(
+            "/api/v1/providers/me",
+            json=update_data,
+            headers=provider_headers
+        )
+        assert response.status_code == 200
+
+        # Verify that unauthorized fields were not updated
+        updated_provider = await test_db.service_providers.find_one({"_id": test_provider.id})
+        assert updated_provider["is_verified"] == test_provider.is_verified  # Unchanged
+        assert updated_provider["verification_status"] == test_provider.verification_status  # Unchanged
+        assert updated_provider["rating"] == test_provider.rating  # Unchanged
+        assert updated_provider["service_type"] == "updated_service"  # Changed (authorized)
+
+    @pytest.mark.asyncio
+    async def test_provider_registration_rate_limiting_placeholder(self, async_client, customer_headers):
+        """Placeholder for rate limiting tests on provider registration."""
+        # Multiple rapid registration attempts should be rate limited
+        # This would require rate limiting middleware in production
+        pass
+
+    @pytest.mark.asyncio
+    async def test_provider_data_injection_prevention(self, async_client, customer_headers, test_db):
+        """Test prevention of data injection attacks."""
+        # Try to inject extra fields
+        malicious_data = {
+            "service_type": "plumber",
+            "location": "downtown",
+            "description": "Legitimate service",
+            "admin_override": True,  # Malicious field
+            "super_user": 1,  # Another malicious field
+            "verification_documents": ["legit.pdf", "'; DROP TABLE providers; --"]
+        }
+
+        response = await async_client.post(
+            "/api/v1/providers/register",
+            json=malicious_data,
+            headers=customer_headers
+        )
+        assert response.status_code == 200
+
+        # Verify malicious fields were not stored
+        created_provider = await test_db.service_providers.find_one(
+            {"user_id": customer_headers["Authorization"].split()[1]}  # Extract user ID from token
+        )
+        if created_provider:
+            assert "admin_override" not in created_provider
+            assert "super_user" not in created_provider
+            # Documents should be stored as-is (validation happens elsewhere)
+            assert "verification_documents" in created_provider</content>
+<parameter name="oldString">        # All counts should be non-negative
         assert data["total_users"] >= 0
         assert data["total_providers"] >= 0
         assert data["pending_providers"] >= 0

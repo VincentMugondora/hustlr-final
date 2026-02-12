@@ -1,80 +1,3 @@
-import asyncio
-import pytest
-from datetime import datetime, timedelta
-
-
-async def test_booking_flow_create_cancel_rate(client):
-    # Register customer, provider, admin
-    cust = {"email": "cust2@example.com", "password": "pass1234", "role": "customer", "name": "Cust Two"}
-    prov = {"email": "prov2@example.com", "password": "provpass", "role": "provider", "name": "Prov Two"}
-    admin = {"email": "admin2@example.com", "password": "adminpass", "role": "admin", "name": "Admin Two"}
-
-    await client.post("/auth/register", json=cust)
-    await client.post("/auth/register", json=prov)
-    await client.post("/auth/register", json=admin)
-
-    lr = await client.post("/auth/login", data={"username": cust["email"], "password": cust["password"]})
-    token_c = lr.json()["access_token"]
-    lr2 = await client.post("/auth/login", data={"username": prov["email"], "password": prov["password"]})
-    token_p = lr2.json()["access_token"]
-    lr3 = await client.post("/auth/login", data={"username": admin["email"], "password": admin["password"]})
-    token_a = lr3.json()["access_token"]
-
-    # Provider registers profile
-    provider_profile = {
-        "user_id": "1",
-        "service_type": "cleaning",
-        "location": "Uptown",
-        "contact_email": "p2@example.com"
-    }
-    h = {"Authorization": f"Bearer {token_p}"}
-    pr = await client.post("/providers/register", json=provider_profile, headers=h)
-    assert pr.status_code in (200,201)
-    body = pr.json()
-    pid = body.get("_id") or body.get("id")
-
-    # Admin verify
-    admin_h = {"Authorization": f"Bearer {token_a}"}
-    v = await client.put(f"/admin/providers/{pid}/verify", json={"verified": True, "notes": "ok"}, headers=admin_h)
-    assert v.status_code == 200
-
-    # Create booking in future
-    future = datetime.utcnow() + timedelta(days=1)
-    booking_payload = {
-        "provider_id": pid,
-        "service_type": "cleaning",
-        "date": future.strftime("%Y-%m-%d"),
-        "time": future.strftime("%H:%M"),
-        "duration_hours": 2.0
-    }
-
-    cust_h = {"Authorization": f"Bearer {token_c}"}
-    b = await client.post("/bookings/", json=booking_payload, headers=cust_h)
-    assert b.status_code in (200,201)
-    booking = b.json()
-    bid = booking.get("_id") or booking.get("id")
-
-    # Provider marks booking completed
-    prov_h = {"Authorization": f"Bearer {token_p}"}
-    s = await client.put(f"/bookings/{bid}/status", params={"status": "completed"}, headers=prov_h)
-    assert s.status_code == 200
-
-    # Customer submits rating
-    rating_payload = {
-        "booking_id": bid,
-        "customer_id": "1",
-        "provider_id": pid,
-        "rating": 5,
-        "comment": "Great job"
-    }
-    r = await client.post(f"/bookings/{bid}/rate", json=rating_payload, headers=cust_h)
-    assert r.status_code == 200
-    rr = r.json()
-    assert rr.get("rating") == 5
-
-    # Attempt to rate again should conflict
-    r2 = await client.post(f"/bookings/{bid}/rate", json=rating_payload, headers=cust_h)
-    assert r2.status_code == 409
 """
 Comprehensive tests for booking-related endpoints.
 Tests booking creation, management, ratings, and cancellations.
@@ -654,6 +577,183 @@ class TestBookingRating:
         }
 
         response = await async_client.post(
+            f"/api/v1/bookings/{completed_booking.id}/rate",
+            json=rating_data,
+            headers=headers
+        )
+        assert response.status_code == 403
+
+
+class TestBookingSecurity:
+    """Test security aspects of booking functionality."""
+
+    @pytest.mark.asyncio
+    async def test_booking_creation_input_validation(self, async_client, customer_headers, test_provider):
+        """Test input validation for booking creation."""
+        # Test invalid date format
+        invalid_booking = {
+            "provider_id": str(test_provider.id),
+            "service_type": "electrician",
+            "date": "invalid-date",
+            "time": "14:00"
+        }
+
+        response = await async_client.post(
+            "/api/v1/bookings/",
+            json=invalid_booking,
+            headers=customer_headers
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid time format
+        invalid_booking = {
+            "provider_id": str(test_provider.id),
+            "service_type": "electrician",
+            "date": "2026-02-20",
+            "time": "invalid-time"
+        }
+
+        response = await async_client.post(
+            "/api/v1/bookings/",
+            json=invalid_booking,
+            headers=customer_headers
+        )
+        assert response.status_code == 422
+
+        # Test past date
+        past_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        invalid_booking = {
+            "provider_id": str(test_provider.id),
+            "service_type": "electrician",
+            "date": past_date,
+            "time": "14:00"
+        }
+
+        response = await async_client.post(
+            "/api/v1/bookings/",
+            json=invalid_booking,
+            headers=customer_headers
+        )
+        assert response.status_code == 400
+        assert "future" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_booking_access_control(self, async_client, test_booking, provider_headers):
+        """Test that users can only access their own bookings."""
+        # Provider tries to cancel a booking they don't own
+        cancel_data = {"reason": "Provider trying to cancel"}
+
+        response = await async_client.put(
+            f"/api/v1/bookings/{test_booking.id}/cancel",
+            json=cancel_data,
+            headers=provider_headers
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_double_booking_prevention(self, async_client, customer_headers, test_provider, test_db):
+        """Test that double booking same provider/time is prevented."""
+        # Create first booking
+        booking_data = {
+            "provider_id": str(test_provider.id),
+            "service_type": "electrician",
+            "date": "2026-02-25",
+            "time": "15:00"
+        }
+
+        response1 = await async_client.post(
+            "/api/v1/bookings/",
+            json=booking_data,
+            headers=customer_headers
+        )
+        assert response1.status_code == 200
+
+        # Try to create second booking at same time
+        response2 = await async_client.post(
+            "/api/v1/bookings/",
+            json=booking_data,
+            headers=customer_headers
+        )
+        assert response2.status_code == 409  # Conflict
+        assert "not available" in response2.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_rating_input_validation(self, async_client, completed_booking, customer_headers):
+        """Test input validation for booking ratings."""
+        # Test invalid rating value (too low)
+        invalid_rating = {
+            "booking_id": str(completed_booking.id),
+            "customer_id": str(completed_booking.customer_id),
+            "provider_id": str(completed_booking.provider_id),
+            "rating": 0  # Below minimum
+        }
+
+        response = await async_client.post(
+            f"/api/v1/bookings/{completed_booking.id}/rate",
+            json=invalid_rating,
+            headers=customer_headers
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid rating value (too high)
+        invalid_rating["rating"] = 6  # Above maximum
+
+        response = await async_client.post(
+            f"/api/v1/bookings/{completed_booking.id}/rate",
+            json=invalid_rating,
+            headers=customer_headers
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_rating_data_injection_prevention(self, async_client, completed_booking, customer_headers, test_db):
+        """Test prevention of data injection in ratings."""
+        malicious_rating = {
+            "booking_id": str(completed_booking.id),
+            "customer_id": str(completed_booking.customer_id),
+            "provider_id": str(completed_booking.provider_id),
+            "rating": 4,
+            "comment": "Good service",
+            "admin_override": True,  # Malicious field
+            "bonus_rating": 10,  # Another malicious field
+            "sql_injection": "'; DROP TABLE ratings; --"
+        }
+
+        response = await async_client.post(
+            f"/api/v1/bookings/{completed_booking.id}/rate",
+            json=malicious_rating,
+            headers=customer_headers
+        )
+        assert response.status_code == 200
+
+        # Verify malicious fields were not stored
+        created_rating = await test_db.ratings.find_one({"booking_id": str(completed_booking.id)})
+        assert created_rating is not None
+        assert "admin_override" not in created_rating
+        assert "bonus_rating" not in created_rating
+        assert created_rating["comment"] == "Good service"  # Legitimate field stored
+
+    @pytest.mark.asyncio
+    async def test_provider_search_injection_prevention(self, async_client, customer_headers):
+        """Test that provider search prevents injection attacks."""
+        # Test regex injection attempt
+        malicious_search = {
+            "service_type": ".*",  # Regex that matches everything
+            "location": "downtown",
+            "max_results": 1000  # Try to get all results
+        }
+
+        response = await async_client.post(
+            "/api/v1/bookings/search_providers",
+            json=malicious_search,
+            headers=customer_headers
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        # Should still be limited by max_results validation
+        assert len(data) <= 50  # Our max limit</content>
+<parameter name="oldString">        response = await async_client.post(
             f"/api/v1/bookings/{completed_booking.id}/rate",
             json=rating_data,
             headers=headers
