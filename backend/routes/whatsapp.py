@@ -1,23 +1,32 @@
 """
 WhatsApp webhook routes for Hustlr.
-Handles incoming messages from WhatsApp service and processes them.
+Handles incoming messages from WhatsApp and returns Bedrock-generated replies.
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+import json
+import logging
 from typing import Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
 from backend.db import db
 from backend.models import Conversation
-from bedrock.agent import invoke_agent
-import logging
+from bedrock.agent import AgentResponse, invoke_agent
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
 
+DEFAULT_ERROR_REPLY = (
+    "Sorry, I am having trouble processing your request right now. "
+    "Please try again in a moment."
+)
+
 
 class WhatsAppMessage(BaseModel):
     """Incoming WhatsApp message payload."""
+
     sender: str
     message: str
     messageId: str
@@ -26,134 +35,120 @@ class WhatsAppMessage(BaseModel):
 
 
 class WhatsAppResponse(BaseModel):
-    """Response to WhatsApp service."""
+    """Response consumed by the Baileys bridge."""
+
     success: bool
     message: Optional[str] = None
+    reply_text: Optional[str] = None
+    conversation_id: Optional[str] = None
+    message_id: Optional[str] = None
     error: Optional[str] = None
 
 
+def _extract_phone_number(sender: str) -> str:
+    return sender.split("@")[0] if "@" in sender else sender
+
+
+def _normalize_agent_reply(agent_response: AgentResponse) -> str:
+    if not agent_response.success:
+        return DEFAULT_ERROR_REPLY
+
+    raw_text = (agent_response.response or "").strip()
+    if not raw_text:
+        return "I received your message. How can I help you today?"
+
+    if raw_text.startswith("{"):
+        try:
+            payload = json.loads(raw_text)
+            candidate = payload.get("message")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        except json.JSONDecodeError:
+            logger.warning("Agent response looked like JSON but failed to parse")
+
+    return raw_text
+
+
 @router.post("/webhook", response_model=WhatsAppResponse)
-async def whatsapp_webhook(
-    message: WhatsAppMessage,
-    background_tasks: BackgroundTasks
-):
+async def whatsapp_webhook(message: WhatsAppMessage):
     """
-    Handle incoming WhatsApp messages.
+    Process incoming WhatsApp message through Bedrock and return a reply payload.
+    """
+    conversation_id: Optional[str] = None
 
-    This endpoint receives messages from the WhatsApp service,
-    processes them through the Bedrock agent, and queues responses.
-    """
     try:
-        logger.info(f"📨 Received WhatsApp message from {message.sender}: {message.message[:100]}...")
-
-        # Validate message
         if not message.message or not message.message.strip():
             raise HTTPException(status_code=400, detail="Empty message")
 
-        # Extract phone number from sender (remove @s.whatsapp.net)
-        phone_number = message.sender.split('@')[0] if '@' in message.sender else message.sender
-
-        # Create session ID from phone number
+        phone_number = _extract_phone_number(message.sender)
         session_id = f"whatsapp_{phone_number}"
 
-        # Store conversation in database
+        logger.info(
+            "Incoming WhatsApp message sender=%s message_id=%s",
+            message.sender,
+            message.messageId,
+        )
+
         conversation = Conversation(
             user_id=phone_number,
-            message=message.message,
-            timestamp=message.timestamp
+            message=message.message.strip(),
+            timestamp=message.timestamp,
         )
+        insert_result = await db.conversations.insert_one(conversation.dict())
+        conversation_id = str(insert_result.inserted_id)
 
-        # Insert conversation (we'll update with response later)
-        result = await db.conversations.insert_one(conversation.dict())
-        conversation_id = str(result.inserted_id)
+        agent_response = await invoke_agent(message.message.strip(), session_id)
+        reply_text = _normalize_agent_reply(agent_response)
 
-        # Process message in background to avoid timeout
-        background_tasks.add_task(
-            process_whatsapp_message,
-            phone_number,
-            message.message,
-            session_id,
-            conversation_id
+        await db.conversations.update_one(
+            {"_id": conversation_id},
+            {
+                "$set": {
+                    "response": reply_text,
+                    "agent_success": agent_response.success,
+                    "action_group": agent_response.action_group,
+                    "agent_error": agent_response.error_message,
+                }
+            },
         )
-
-        logger.info(f"✅ WhatsApp message queued for processing: {conversation_id}")
 
         return WhatsAppResponse(
             success=True,
-            message="Message received and queued for processing"
+            message="Message processed",
+            reply_text=reply_text,
+            conversation_id=conversation_id,
+            message_id=message.messageId,
         )
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"❌ Error processing WhatsApp webhook: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    except Exception as exc:
+        logger.exception("Error processing WhatsApp webhook message_id=%s", message.messageId)
 
+        if conversation_id:
+            try:
+                await db.conversations.update_one(
+                    {"_id": conversation_id},
+                    {"$set": {"response": DEFAULT_ERROR_REPLY, "processing_error": str(exc)}},
+                )
+            except Exception:
+                logger.exception("Failed to update conversation with fallback error response")
 
-async def process_whatsapp_message(
-    phone_number: str,
-    user_message: str,
-    session_id: str,
-    conversation_id: str
-):
-    """
-    Process WhatsApp message through Bedrock agent.
-
-    This function runs in the background to handle AI processing
-    and response generation without blocking the webhook response.
-    """
-    try:
-        logger.info(f"🤖 Processing message for session: {session_id}")
-
-        # Invoke Bedrock agent
-        agent_response = await invoke_agent(user_message, session_id)
-
-        # Prepare response message
-        if agent_response.success:
-            response_message = agent_response.response or "I received your message. How can I help you today?"
-
-            # Log action group if triggered
-            if agent_response.action_group:
-                logger.info(f"🎯 Action triggered: {agent_response.action_group}")
-                # Here you could trigger specific backend actions based on the action group
-                # e.g., search_providers, create_booking, etc.
-
-        else:
-            response_message = "I'm sorry, I'm having trouble processing your request right now. Please try again later."
-            logger.error(f"❌ Agent processing failed: {agent_response.error_message}")
-
-        # Update conversation with response
-        await db.conversations.update_one(
-            {"_id": conversation_id},
-            {"$set": {"response": response_message}}
+        return WhatsAppResponse(
+            success=False,
+            message="Failed to process message",
+            reply_text=DEFAULT_ERROR_REPLY,
+            message_id=message.messageId,
+            conversation_id=conversation_id,
+            error="internal_error",
         )
-
-        # TODO: Send response back to WhatsApp
-        # This would require implementing a callback to the WhatsApp service
-        # or storing the response for the WhatsApp service to poll
-
-        logger.info(f"✅ Message processed successfully for {phone_number}")
-
-    except Exception as e:
-        logger.error(f"❌ Error in background message processing: {e}")
-
-        # Update conversation with error
-        try:
-            await db.conversations.update_one(
-                {"_id": conversation_id},
-                {"$set": {"response": "Sorry, an error occurred while processing your message."}}
-            )
-        except Exception as db_error:
-            logger.error(f"❌ Failed to update conversation with error: {db_error}")
 
 
 @router.get("/health")
 async def whatsapp_health():
-    """
-    Health check for WhatsApp integration.
-    """
+    """Health check for WhatsApp integration."""
     return {
         "status": "healthy",
         "service": "WhatsApp Integration",
-        "message": "WhatsApp webhook is operational"
+        "message": "WhatsApp webhook is operational",
     }

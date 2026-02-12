@@ -1,7 +1,6 @@
 /**
  * WhatsApp Integration for Hustlr
- * Uses Baileys library to connect to WhatsApp Web
- * Handles incoming messages and forwards them to FastAPI backend
+ * Uses Baileys to receive WhatsApp messages and round-trip them through FastAPI + Bedrock.
  */
 
 const {
@@ -9,370 +8,296 @@ const {
     DisconnectReason,
     useMultiFileAuthState,
     makeCacheableSignalKeyStore,
-    Browsers
+    Browsers,
 } = require('@adiwajshing/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
-const path = require('path');
 const axios = require('axios');
 require('dotenv').config();
 
-// Configuration
 const AUTH_FOLDER = './auth_info';
 const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || 'http://localhost:8000';
-const RECONNECT_INTERVAL = 5000; // 5 seconds
-const MAX_RECONNECT_ATTEMPTS = 10;
+const FASTAPI_TIMEOUT_MS = parseInt(process.env.FASTAPI_TIMEOUT_MS || '15000', 10);
+const RECONNECT_INTERVAL = parseInt(process.env.RECONNECT_INTERVAL || '5000', 10);
+const MAX_RECONNECT_ATTEMPTS = parseInt(process.env.MAX_RECONNECT_ATTEMPTS || '10', 10);
+const FORWARD_RETRY_ATTEMPTS = parseInt(process.env.FORWARD_RETRY_ATTEMPTS || '3', 10);
+const FORWARD_RETRY_DELAY_MS = parseInt(process.env.FORWARD_RETRY_DELAY_MS || '1000', 10);
 
-// Ensure auth folder exists
+const FALLBACK_REPLY =
+    'Sorry, I am having trouble processing your request right now. Please try again in a moment.';
+
 if (!fs.existsSync(AUTH_FOLDER)) {
     fs.mkdirSync(AUTH_FOLDER, { recursive: true });
 }
 
-/**
- * Logger utility for consistent logging
- */
+const backendClient = axios.create({
+    baseURL: FASTAPI_BASE_URL,
+    timeout: FASTAPI_TIMEOUT_MS,
+    headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Hustlr-WhatsApp/1.0.0',
+    },
+});
+
 class Logger {
     static info(message, ...args) {
-        console.log(`📱 [${new Date().toISOString()}] INFO: ${message}`, ...args);
-    }
-
-    static error(message, ...args) {
-        console.error(`❌ [${new Date().toISOString()}] ERROR: ${message}`, ...args);
+        console.log(`[${new Date().toISOString()}] INFO: ${message}`, ...args);
     }
 
     static warn(message, ...args) {
-        console.warn(`⚠️  [${new Date().toISOString()}] WARN: ${message}`, ...args);
+        console.warn(`[${new Date().toISOString()}] WARN: ${message}`, ...args);
     }
 
-    static success(message, ...args) {
-        console.log(`✅ [${new Date().toISOString()}] SUCCESS: ${message}`, ...args);
+    static error(message, ...args) {
+        console.error(`[${new Date().toISOString()}] ERROR: ${message}`, ...args);
     }
 }
 
-/**
- * WhatsApp connection manager
- */
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class WhatsAppManager {
     constructor() {
         this.sock = null;
         this.reconnectAttempts = 0;
         this.isConnected = false;
-        this.authState = null;
     }
 
-    /**
-     * Initialize WhatsApp connection
-     */
     async initialize() {
-        try {
-            // Load or create authentication state
-            const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-            this.authState = state;
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
-            Logger.info('Initializing WhatsApp connection...');
+        Logger.info('Initializing WhatsApp connection');
 
-            // Create WhatsApp socket
-            this.sock = makeWASocket({
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, Logger)
-                },
-                printQRInTerminal: true,
-                browser: Browsers.macOS('Desktop'),
-                logger: {
-                    level: 'silent' // Reduce Baileys logging noise
-                }
-            });
+        this.sock = makeWASocket({
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, console),
+            },
+            printQRInTerminal: true,
+            browser: Browsers.macOS('Desktop'),
+            logger: { level: 'silent' },
+        });
 
-            // Bind event handlers
-            this.bindEventHandlers(saveCreds);
-
-            Logger.success('WhatsApp manager initialized');
-
-        } catch (error) {
-            Logger.error('Failed to initialize WhatsApp manager:', error);
-            throw error;
-        }
+        this.bindEventHandlers(saveCreds);
+        Logger.info('WhatsApp manager initialized');
     }
 
-    /**
-     * Bind all event handlers
-     */
     bindEventHandlers(saveCreds) {
-        // Connection updates
         this.sock.ev.on('connection.update', async (update) => {
-            await this.handleConnectionUpdate(update, saveCreds);
-        });
-
-        // Credentials updates
-        this.sock.ev.on('creds.update', saveCreds);
-
-        // Incoming messages
-        this.sock.ev.on('messages.upsert', async (m) => {
-            await this.handleIncomingMessage(m);
-        });
-
-        // Message acknowledgements
-        this.sock.ev.on('messages.update', (updates) => {
-            this.handleMessageUpdates(updates);
-        });
-
-        // Handle disconnections
-        this.sock.ev.on('connection.update', (update) => {
+            await this.handleConnectionUpdate(update);
             if (update.qr) {
-                Logger.info('QR Code received, scan with WhatsApp:');
+                Logger.info('QR code generated. Scan in WhatsApp app.');
                 qrcode.generate(update.qr, { small: true });
             }
         });
+
+        this.sock.ev.on('creds.update', saveCreds);
+
+        this.sock.ev.on('messages.upsert', async (event) => {
+            await this.handleIncomingMessage(event);
+        });
+
+        this.sock.ev.on('messages.update', (updates) => {
+            this.handleMessageUpdates(updates);
+        });
     }
 
-    /**
-     * Handle connection updates
-     */
-    async handleConnectionUpdate(update, saveCreds) {
-        const { connection, lastDisconnect, qr } = update;
+    async handleConnectionUpdate(update) {
+        const { connection, lastDisconnect } = update;
 
-        if (qr) {
-            Logger.info('QR Code received - scan with WhatsApp app');
-            // QR code is automatically printed by Baileys
-        }
-
-        if (connection === 'close') {
-            this.isConnected = false;
-            const shouldReconnect = this.shouldReconnect(lastDisconnect?.error);
-
-            if (shouldReconnect) {
-                await this.handleReconnection();
-            } else {
-                Logger.error('Connection closed permanently');
-                process.exit(1);
-            }
-        } else if (connection === 'open') {
+        if (connection === 'open') {
             this.isConnected = true;
             this.reconnectAttempts = 0;
-            Logger.success('WhatsApp connected successfully!');
-
-            // Send presence to indicate online status
+            Logger.info('WhatsApp connected');
             await this.sock.sendPresenceUpdate('available');
+            return;
         }
+
+        if (connection !== 'close') {
+            return;
+        }
+
+        this.isConnected = false;
+        const shouldReconnect = this.shouldReconnect(lastDisconnect?.error);
+
+        if (!shouldReconnect) {
+            Logger.error('Connection closed permanently');
+            process.exit(1);
+            return;
+        }
+
+        await this.handleReconnection();
     }
 
-    /**
-     * Determine if reconnection should be attempted
-     */
     shouldReconnect(error) {
         if (!error) return true;
 
         const boom = Boom.isBoom(error) ? error : new Boom(error);
         const disconnectReason = boom?.output?.statusCode;
 
-        // Don't reconnect on logout or banned accounts
         const noReconnectCodes = [
             DisconnectReason.loggedOut,
             DisconnectReason.banned,
-            DisconnectReason.notAuthorized
+            DisconnectReason.notAuthorized,
         ];
 
         if (noReconnectCodes.includes(disconnectReason)) {
-            Logger.error(`Not reconnecting due to reason: ${disconnectReason}`);
+            Logger.error(`Not reconnecting due to disconnect reason: ${disconnectReason}`);
             return false;
         }
 
         return this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS;
     }
 
-    /**
-     * Handle reconnection logic
-     */
     async handleReconnection() {
-        this.reconnectAttempts++;
-        Logger.warn(`Attempting reconnection ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}...`);
+        this.reconnectAttempts += 1;
+        Logger.warn(
+            `Reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${RECONNECT_INTERVAL}ms`
+        );
 
-        setTimeout(async () => {
-            try {
-                await this.initialize();
-            } catch (error) {
-                Logger.error('Reconnection failed:', error);
-                if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-                    Logger.error('Max reconnection attempts reached. Exiting...');
-                    process.exit(1);
-                }
-            }
-        }, RECONNECT_INTERVAL);
+        await sleep(RECONNECT_INTERVAL);
+        await this.initialize();
     }
 
-    /**
-     * Handle incoming messages
-     */
-    async handleIncomingMessage(m) {
+    async handleIncomingMessage(event) {
+        const incoming = event.messages?.[0];
+        if (!incoming) return;
+
+        const remoteJid = incoming.key?.remoteJid;
+        const messageId = incoming.key?.id || 'unknown';
+
+        if (!remoteJid || remoteJid === 'status@broadcast') return;
+        if (remoteJid.includes('@g.us')) return;
+        if (incoming.key?.fromMe) return;
+
+        const messageText = this.extractMessageContent(incoming);
+        if (!messageText || !messageText.trim()) {
+            Logger.warn(`Skipping empty/unsupported message id=${messageId}`);
+            return;
+        }
+
+        Logger.info(`Incoming message id=${messageId} sender=${remoteJid}`);
+
+        let reply = FALLBACK_REPLY;
         try {
-            const msg = m.messages[0];
-            if (!msg) return;
+            const backendResult = await this.forwardToBackend({
+                sender: remoteJid,
+                message: messageText.trim(),
+                messageId,
+            });
 
-            // Skip messages from status updates or groups (for now)
-            if (msg.key.remoteJid === 'status@broadcast') return;
-            if (msg.key.remoteJid.includes('@g.us')) {
-                Logger.info('Ignoring group message');
-                return;
+            if (backendResult.replyText && backendResult.replyText.trim()) {
+                reply = backendResult.replyText.trim();
             }
-
-            // Skip own messages
-            if (msg.key.fromMe) return;
-
-            // Extract message content
-            const messageContent = this.extractMessageContent(msg);
-            if (!messageContent) return;
-
-            const sender = msg.key.remoteJid;
-            const messageId = msg.key.id;
-
-            Logger.info(`📨 Message from ${sender}: ${messageContent.substring(0, 100)}...`);
-
-            // Forward to FastAPI backend
-            await this.forwardToBackend(sender, messageContent, messageId);
-
-            // Send message acknowledgement
-            await this.sock.readMessages([msg.key]);
-
         } catch (error) {
-            Logger.error('Error handling incoming message:', error);
+            Logger.error(`Backend forwarding failed id=${messageId}: ${error.message}`);
+        }
+
+        try {
+            await this.sendReply(remoteJid, reply);
+            await this.sock.readMessages([incoming.key]);
+            Logger.info(`Message acknowledged id=${messageId}`);
+        } catch (error) {
+            Logger.error(`Failed to send/ack reply id=${messageId}: ${error.message}`);
         }
     }
 
-    /**
-     * Extract message content from various message types
-     */
     extractMessageContent(msg) {
-        try {
-            const message = msg.message;
-            if (!message) return null;
+        const message = msg.message;
+        if (!message) return null;
 
-            // Text message
-            if (message.conversation) {
-                return message.conversation;
-            }
-
-            // Extended text message
-            if (message.extendedTextMessage) {
-                return message.extendedTextMessage.text;
-            }
-
-            // Button response
-            if (message.buttonsResponseMessage) {
-                return message.buttonsResponseMessage.selectedDisplayText;
-            }
-
-            // List response
-            if (message.listResponseMessage) {
-                return message.listResponseMessage.title;
-            }
-
-            Logger.warn('Unsupported message type:', Object.keys(message));
-            return null;
-
-        } catch (error) {
-            Logger.error('Error extracting message content:', error);
-            return null;
+        if (message.conversation) return message.conversation;
+        if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
+        if (message.buttonsResponseMessage?.selectedDisplayText) {
+            return message.buttonsResponseMessage.selectedDisplayText;
         }
+        if (message.listResponseMessage?.title) return message.listResponseMessage.title;
+
+        Logger.warn(`Unsupported message type: ${Object.keys(message).join(', ')}`);
+        return null;
     }
 
-    /**
-     * Forward message to FastAPI backend
-     */
-    async forwardToBackend(sender, message, messageId) {
-        try {
-            const payload = {
-                sender: sender,
-                message: message,
-                messageId: messageId,
-                timestamp: new Date().toISOString(),
-                source: 'whatsapp'
-            };
+    async forwardToBackend({ sender, message, messageId }) {
+        const payload = {
+            sender,
+            message,
+            messageId,
+            timestamp: new Date().toISOString(),
+            source: 'whatsapp',
+        };
 
-            const response = await axios.post(
-                `${FASTAPI_BASE_URL}/api/v1/whatsapp/webhook`,
-                payload,
-                {
-                    timeout: 10000, // 10 second timeout
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'User-Agent': 'Hustlr-WhatsApp/1.0.0'
-                    }
+        let lastError;
+
+        for (let attempt = 1; attempt <= FORWARD_RETRY_ATTEMPTS; attempt += 1) {
+            try {
+                const response = await backendClient.post('/api/v1/whatsapp/webhook', payload);
+                const data = response.data || {};
+
+                Logger.info(
+                    `Backend processed message id=${messageId} status=${response.status} success=${data.success}`
+                );
+
+                return {
+                    success: Boolean(data.success),
+                    replyText: data.reply_text || FALLBACK_REPLY,
+                };
+            } catch (error) {
+                lastError = error;
+                const status = error?.response?.status;
+                Logger.warn(
+                    `Backend attempt ${attempt}/${FORWARD_RETRY_ATTEMPTS} failed id=${messageId} status=${status || 'n/a'}`
+                );
+
+                if (attempt < FORWARD_RETRY_ATTEMPTS) {
+                    await sleep(FORWARD_RETRY_DELAY_MS * attempt);
                 }
-            );
-
-            Logger.success(`✅ Message forwarded to backend: ${response.status}`);
-
-        } catch (error) {
-            Logger.error('Failed to forward message to backend:', error.message);
-
-            // Could implement retry logic here
-            // For now, just log the error
+            }
         }
+
+        throw lastError || new Error('Backend forwarding failed after retries');
     }
 
-    /**
-     * Handle message updates (acknowledgements, etc.)
-     */
+    async sendReply(to, message) {
+        if (!this.isConnected) {
+            throw new Error('WhatsApp client is not connected');
+        }
+
+        await this.sock.sendPresenceUpdate('composing', to);
+        await this.sock.sendMessage(to, { text: message });
+        await this.sock.sendPresenceUpdate('paused', to);
+
+        Logger.info(`Reply sent to ${to}`);
+    }
+
     handleMessageUpdates(updates) {
         for (const update of updates) {
-            if (update.update.messageStubType) {
-                Logger.info(`Message update: ${update.update.messageStubType}`);
+            if (update?.update?.status) {
+                Logger.info(`Message status update id=${update.key?.id || 'unknown'} status=${update.update.status}`);
             }
         }
     }
 
-    /**
-     * Send a message (for responses)
-     */
-    async sendMessage(to, message) {
-        try {
-            if (!this.isConnected) {
-                throw new Error('WhatsApp not connected');
-            }
-
-            const result = await this.sock.sendMessage(to, { text: message });
-            Logger.success(`📤 Message sent to ${to}`);
-            return result;
-
-        } catch (error) {
-            Logger.error('Failed to send message:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Graceful shutdown
-     */
     async shutdown() {
-        Logger.info('Shutting down WhatsApp manager...');
-
+        Logger.info('Shutting down WhatsApp manager');
         if (this.sock) {
             this.sock.end();
         }
-
-        Logger.success('WhatsApp manager shut down');
     }
 }
 
-/**
- * Main application entry point
- */
 async function main() {
-    Logger.info('🚀 Starting Hustlr WhatsApp Service...');
+    Logger.info('Starting Hustlr WhatsApp service');
 
     const whatsapp = new WhatsAppManager();
 
-    // Handle graceful shutdown
     process.on('SIGINT', async () => {
-        Logger.info('Received SIGINT, shutting down gracefully...');
         await whatsapp.shutdown();
         process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
-        Logger.info('Received SIGTERM, shutting down gracefully...');
         await whatsapp.shutdown();
         process.exit(0);
     });
@@ -380,15 +305,14 @@ async function main() {
     try {
         await whatsapp.initialize();
     } catch (error) {
-        Logger.error('Failed to start WhatsApp service:', error);
+        Logger.error(`Failed to start WhatsApp service: ${error.message}`);
         process.exit(1);
     }
 }
 
-// Start the application
 if (require.main === module) {
     main().catch((error) => {
-        Logger.error('Unhandled error:', error);
+        Logger.error(`Unhandled error: ${error.message}`);
         process.exit(1);
     });
 }
